@@ -14,7 +14,11 @@ Builds an animated scene from resampled track data (see bunchrenderer.tracks):
              evolution of the distribution reads clearly as a movie;
 * "overview" -- a dashboard camera framing all phase-space stations.
 
-Requires Blender >= 4.0; >= 4.5 recommended (true Kelvin light temperatures).
+Supports Blender 4.2 LTS through 5.x (tested on 4.5.10 and 5.0.1); >= 4.5
+gives true Kelvin light temperatures. Version differences handled here:
+slotted actions (5.0 removed Action.fcurves), the compositing node group
+(5.0 removed Scene.node_tree), the socket-based Glare node, and video
+output media types.
 """
 
 import argparse
@@ -181,9 +185,7 @@ def make_cloud(name, coords, sample_frames):
     for s, frame in enumerate(sample_frames):
         key.eval_time = key.key_blocks[s].frame
         key.keyframe_insert("eval_time", frame=frame)
-    for fc in key.animation_data.action.fcurves:
-        for kp in fc.keyframe_points:
-            kp.interpolation = "LINEAR"
+    set_interpolation(key.animation_data, "LINEAR")
     return obj
 
 
@@ -365,6 +367,33 @@ def make_plane(name, location, size, material):
     return link(obj)
 
 
+def anim_fcurves(animdata):
+    """All F-curves of a datablock's action, across Blender versions.
+
+    Blender <= 4.x exposes ``action.fcurves`` directly; Blender 5.0 removed
+    that legacy API in favor of slotted actions (layers > strips >
+    channelbags)."""
+    if animdata is None or animdata.action is None:
+        return []
+    action = animdata.action
+    if hasattr(action, "fcurves"):
+        return list(action.fcurves)
+    slot = getattr(animdata, "action_slot", None)
+    out = []
+    for layer in action.layers:
+        for strip in layer.strips:
+            for bag in getattr(strip, "channelbags", []):
+                if slot is None or bag.slot_handle == slot.handle:
+                    out.extend(bag.fcurves)
+    return out
+
+
+def set_interpolation(animdata, mode):
+    for fc in anim_fcurves(animdata):
+        for kp in fc.keyframe_points:
+            kp.interpolation = mode
+
+
 def move_to_collection(obj, col):
     for c in list(obj.users_collection):
         c.objects.unlink(obj)
@@ -524,24 +553,34 @@ class Builder:
             bg.inputs[1].default_value = 1.0
 
         try:  # subtle glow on emissive particles
-            scene.use_nodes = True
-            tree = scene.node_tree
-            tree.nodes.clear()
+            if hasattr(scene, "node_tree"):  # Blender <= 4.x
+                scene.use_nodes = True
+                tree = scene.node_tree
+                tree.nodes.clear()
+                out_node = tree.nodes.new("CompositorNodeComposite")
+            else:  # Blender >= 5.0: compositing node group datablock
+                tree = bpy.data.node_groups.new("BunchCompositing",
+                                                "CompositorNodeTree")
+                _iface_socket(tree, "Image", "OUTPUT", "NodeSocketColor")
+                out_node = tree.nodes.new("NodeGroupOutput")
+                scene.compositing_node_group = tree
             rl = tree.nodes.new("CompositorNodeRLayers")
             glare = tree.nodes.new("CompositorNodeGlare")
-            glare.glare_type = "FOG_GLOW"
-            if glare.inputs.get("Strength") is not None:  # Blender >= 4.4 sockets
+            if hasattr(glare, "glare_type"):  # <= 4.x property
+                glare.glare_type = "FOG_GLOW"
+            else:  # 5.x menu socket
+                glare.inputs["Type"].default_value = "Fog Glow"
+            if glare.inputs.get("Strength") is not None:  # >= 4.4 sockets
                 glare.inputs["Threshold"].default_value = 1.0
                 glare.inputs["Strength"].default_value = 0.18
                 glare.inputs["Size"].default_value = 0.6
-            else:  # Blender <= 4.3 node properties
+            else:  # <= 4.3 node properties
                 glare.quality = "MEDIUM"
                 glare.threshold = 1.0
                 glare.size = 8
                 glare.mix = -0.7
-            comp = tree.nodes.new("CompositorNodeComposite")
             tree.links.new(rl.outputs["Image"], glare.inputs["Image"])
-            tree.links.new(glare.outputs["Image"], comp.inputs["Image"])
+            tree.links.new(glare.outputs["Image"], out_node.inputs[0])
         except Exception as exc:
             print(f"[scene_builder] compositor glare skipped: {exc}")
 
@@ -638,9 +677,7 @@ class Builder:
         for s, frame in enumerate(self.sample_frames):
             target.location = centroids[s]
             target.keyframe_insert("location", frame=frame)
-        for fc in target.animation_data.action.fcurves:
-            for kp in fc.keyframe_points:
-                kp.interpolation = "LINEAR"
+        set_interpolation(target.animation_data, "LINEAR")
 
         cam = make_camera("Cam_beam", (0, 0, 0), target=target, lens=46)
         cam.parent = target
@@ -762,9 +799,7 @@ class Builder:
                 if fb < self.total_frames:
                     setattr(t, prop, True)
                     t.keyframe_insert(prop, frame=fb + 1)
-            for fc in t.animation_data.action.fcurves:
-                for kp in fc.keyframe_points:
-                    kp.interpolation = "CONSTANT"
+            set_interpolation(t.animation_data, "CONSTANT")
 
     def build_station_hud(self, vid, cam, axes, coords):
         """Heads-up display for a 3D station camera: title, z-readout, and the
@@ -941,9 +976,7 @@ class Builder:
         pivot.keyframe_insert("rotation_euler", frame=1)
         pivot.rotation_euler = (0.0, 0.0, math.radians(16.0))
         pivot.keyframe_insert("rotation_euler", frame=self.total_frames)
-        for fc in pivot.animation_data.action.fcurves:
-            for kp in fc.keyframe_points:
-                kp.interpolation = "LINEAR"
+        set_interpolation(pivot.animation_data, "LINEAR")
         cam = make_camera(f"Cam_{vid}", (7.1, -9.6, 5.1), target=tgt, lens=40)
         cam.parent = pivot
         self.cameras[vid] = cam
@@ -1062,15 +1095,20 @@ class Builder:
                 continue
             scene.camera = cam
             self.set_active_hud(label)
+            ims = scene.render.image_settings
             if self.args.format == "mp4":
-                scene.render.image_settings.file_format = "FFMPEG"
+                if hasattr(ims, "media_type"):  # Blender >= 5.0
+                    ims.media_type = "VIDEO"
+                ims.file_format = "FFMPEG"
                 scene.render.ffmpeg.format = "MPEG4"
                 scene.render.ffmpeg.codec = "H264"
                 scene.render.ffmpeg.constant_rate_factor = "HIGH"
                 scene.render.ffmpeg.audio_codec = "NONE"
                 scene.render.filepath = os.path.join(rdir, f"{label}_")
             else:
-                scene.render.image_settings.file_format = "PNG"
+                if hasattr(ims, "media_type"):
+                    ims.media_type = "IMAGE"
+                ims.file_format = "PNG"
                 scene.render.filepath = os.path.join(rdir, label, "frame_")
             print(f"[scene_builder] rendering camera '{label}' "
                   f"({scene.frame_start}-{scene.frame_end})...")
