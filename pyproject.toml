@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bunchrenderer"
+version = "0.1.0"
+description = "Render particle-beam track data (g4beamline / CSV) as animated, studio-lit Blender scenes: real-space flight, phase-space projections, and convex-hull beam envelopes."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "BunchRenderer contributors" }]
+keywords = ["g4beamline", "blender", "accelerator", "beam", "phase-space", "visualization"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Multimedia :: Graphics :: 3D Rendering",
+]
+
+[project.scripts]
+bunchrender = "bunchrenderer.cli:main"
+
+[tool.setuptools]
+packages = ["bunchrenderer"]
+
+[tool.setuptools.package-data]
+bunchrenderer = ["blender/*.py", "docker/Dockerfile"]

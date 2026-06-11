@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+*.blend
+*.blend1
+renders/
+*_renders/
+.bunchrenderer-*/
+.venv/
