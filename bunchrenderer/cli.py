@@ -161,6 +161,9 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     args.views = _validate_csv_list(args.views, VIEW_IDS, "--views")
     args.cameras = _validate_csv_list(args.cameras, CAMERA_IDS, "--cameras")
+    args.frames = max(2, args.frames)
+    args.time_samples = max(2, args.time_samples)
+    args.max_particles = max(4, args.max_particles)
 
     in_path = Path(args.input)
     out_path = Path(args.output) if args.output else Path.cwd() / (in_path.stem or "bunch")
