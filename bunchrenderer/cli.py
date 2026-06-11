@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import __version__, elements as elementslib, tracks as tracklib
 
-BLENDER_VERSION = "4.5.10"
+BLENDER_VERSION = "5.0.1"
 DEFAULT_IMAGE = f"bunchrenderer/blender:{BLENDER_VERSION}"
 
 VIEW_IDS = ["beam", "xxpy", "xxpyp", "xyyp", "xpyyp", "zpzx", "zpzy"]

@@ -1,7 +1,7 @@
 # Headless Blender image for BunchRenderer.
 # Built automatically by `bunchrender` on first use; build manually with:
-#   docker build -t bunchrenderer/blender:4.5.10 bunchrenderer/docker
-ARG BLENDER_VERSION=4.5.10
+#   docker build -t bunchrenderer/blender:5.0.1 bunchrenderer/docker
+ARG BLENDER_VERSION=5.0.1
 
 FROM ubuntu:22.04
 ARG BLENDER_VERSION

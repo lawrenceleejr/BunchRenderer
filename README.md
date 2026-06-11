@@ -31,10 +31,10 @@ a subtle glow pass.
 
 ## Running on macOS (no Docker)
 
-1. Install [Blender](https://www.blender.org/download/) — anything from
-   4.2 LTS through 5.x works (tested on 4.5.10 and 5.0.1); 4.5+ recommended
-   for true Kelvin light temperatures. `brew install --cask blender` is fine.
-   No Python packages are needed — the CLI is pure standard library.
+1. Install [Blender 5](https://www.blender.org/download/) (tested on 5.0.1;
+   `brew install --cask blender` is fine). Blender 4.2–4.5 LTS also work,
+   with 4.2–4.4 approximating the Kelvin lights. No Python packages are
+   needed — the CLI is pure standard library.
 2. From a clone of this repo, run it directly (no `pip install` required):
 
 ```bash
@@ -99,9 +99,9 @@ bunchrender examples/gaussian_beam.txt --render \
 
 By default **only the `.blend` is produced**; `--render` switches on the fully
 headless render. On first use, Docker mode builds a small image
-(`bunchrenderer/blender:4.5.10`, Ubuntu + the official Blender LTS build);
+(`bunchrenderer/blender:5.0.1`, Ubuntu + the official Blender build);
 `--docker-image IMAGE` substitutes any image with `blender` on its `PATH`,
-and `docker build --build-arg BLENDER_VERSION=5.0.1 …` builds the bundled
+and `docker build --build-arg BLENDER_VERSION=4.5.10 …` builds the bundled
 Dockerfile against another Blender release. Local mode supports Blender
 4.2 LTS through 5.x.
 
