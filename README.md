@@ -53,14 +53,21 @@ cd BunchRenderer
 is equivalent to `./bin/bunchrender …`. Movies land in `<output>_renders/`,
 one MP4 per camera, alongside the `.blend`.
 
-If you prefer a real install, note that build isolation downloads `setuptools`
-from your configured index — on a machine pinned to an internal index (e.g.
-CERN's acc-py) that's offsite or unreachable, use one of:
+### If `pip install .` fails reaching an internal package index
+
+On machines whose pip is pinned to an internal index (e.g. CERN's acc-py),
+`pip install .` dies offsite because build isolation tries to download
+`setuptools` from that index. Point this one install at PyPI instead:
 
 ```bash
-pip install --no-build-isolation .            # use your existing setuptools
-PIP_INDEX_URL=https://pypi.org/simple pip install .   # bypass the internal index
+pip install -i https://pypi.org/simple .
 ```
+
+Alternatives: `pip install --no-build-isolation .` (uses your existing
+setuptools, no network at all), or fix it permanently with
+`pip config set global.index-url https://pypi.org/simple`
+(`pip config debug` shows which config file pins the index). Or skip
+installing entirely — `./bin/bunchrender` runs straight from the clone.
 
 ## Quick start (any platform)
 
