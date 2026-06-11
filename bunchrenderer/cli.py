@@ -36,11 +36,15 @@ def build_parser():
                     "projections, each with an animated convex-hull envelope.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("input",
-                   help="g4beamline track file (BLTrackFile ASCII), or a directory "
-                        "of CSV files with one particle track per file")
+    p.add_argument("inputs", nargs="+", metavar="INPUT",
+                   help="one or more g4beamline track files (BLTrackFile ASCII) "
+                        "or directories of per-track CSVs; each input becomes "
+                        "its own color-coded beam in every view")
     p.add_argument("-o", "--output", default=None,
-                   help="output .blend path (default: <input name>.blend)")
+                   help="output .blend path (default: <first input name>.blend)")
+    p.add_argument("--labels", default=None, metavar="A,B",
+                   help="comma-separated display names for the beams "
+                        "(default: input file names)")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
     ex = p.add_argument_group("execution")
@@ -142,6 +146,38 @@ def _builder_args(args, data_path, blend_path, render_dir):
     return out
 
 
+def _load_beams(args, in_paths, labels):
+    """Load every input and resample all beams onto one shared time grid."""
+    track_sets = [tracklib.load_tracks(p, drift_length=args.drift_length)
+                  for p in in_paths]
+    t0 = min(tracklib.time_range(ts)[0] for ts in track_sets)
+    t1 = max(tracklib.time_range(ts)[1] for ts in track_sets)
+    per_beam_cap = max(10, args.max_particles // len(track_sets))
+
+    beams = []
+    times = None
+    for label, tracks in zip(labels, track_sets):
+        b = tracklib.resample(tracks, n_samples=args.time_samples,
+                              max_particles=per_beam_cap, t_range=(t0, t1))
+        times = b["times"]
+        beams.append({"label": label,
+                      "n_particles": b["meta"]["n_particles"],
+                      "pdgid": b["meta"]["pdgid"],
+                      "pos": b["pos"], "mom": b["mom"]})
+    return {
+        "meta": {
+            "n_beams": len(beams),
+            "labels": labels,
+            "n_samples": args.time_samples,
+            "t_start_ns": round(t0, 4),
+            "t_end_ns": round(t1, 4),
+            "units": {"pos": "mm", "mom": "MeV/c", "t": "ns"},
+        },
+        "times": times,
+        "beams": beams,
+    }
+
+
 def _mesh_transverse_half_extent(mesh):
     xs = [v[0] for v in mesh["verts"]]
     ys = [v[1] for v in mesh["verts"]]
@@ -234,8 +270,9 @@ def main(argv=None):
     args.time_samples = max(2, args.time_samples)
     args.max_particles = max(4, args.max_particles)
 
-    in_path = Path(args.input)
-    out_path = Path(args.output) if args.output else Path.cwd() / (in_path.stem or "bunch")
+    in_paths = [Path(p) for p in args.inputs]
+    out_path = (Path(args.output) if args.output
+                else Path.cwd() / (in_paths[0].stem or "bunch"))
     if out_path.suffix != ".blend":
         out_path = out_path.with_suffix(".blend")
     out_path = out_path.resolve()
@@ -243,10 +280,13 @@ def main(argv=None):
     render_dir = (Path(args.render_dir).resolve() if args.render_dir
                   else out_path.with_name(out_path.stem + "_renders"))
 
+    labels = ([s.strip() for s in args.labels.split(",")] if args.labels
+              else [p.stem or f"beam {i}" for i, p in enumerate(in_paths)])
+    if len(labels) != len(in_paths):
+        raise SystemExit("error: --labels must name each input exactly once")
+
     try:
-        tracks = tracklib.load_tracks(in_path, drift_length=args.drift_length)
-        bundle = tracklib.resample(tracks, n_samples=args.time_samples,
-                                   max_particles=args.max_particles)
+        bundle = _load_beams(args, in_paths, labels)
         elements = _load_elements(args)
         if elements is not None:
             bundle["elements"] = elements
@@ -254,8 +294,10 @@ def main(argv=None):
         raise SystemExit(f"error: {exc}")
 
     meta = bundle["meta"]
-    print(f"[bunchrender] {meta['n_particles']} particles, "
-          f"{meta['n_samples']} time samples, "
+    for beam in bundle["beams"]:
+        print(f"[bunchrender] beam '{beam['label']}': "
+              f"{beam['n_particles']} particles")
+    print(f"[bunchrender] {meta['n_samples']} time samples, "
           f"t = {meta['t_start_ns']:.3f} .. {meta['t_end_ns']:.3f} ns")
 
     # Stage everything Blender needs in one directory so a single Docker bind

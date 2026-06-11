@@ -2,9 +2,9 @@
 
 Turn particle-beam track data into animated, studio-lit **Blender** scenes.
 
-Feed it a [g4beamline](http://g4beamline.muonsinc.com) track file (or a folder
-of per-track CSVs) and it builds a `.blend` file — or headlessly renders
-movies — containing:
+Feed it one or more [g4beamline](http://g4beamline.muonsinc.com) track files
+(or folders of per-track CSVs) and it builds a `.blend` file — or headlessly
+renders movies — containing:
 
 * **Real-space beam flight** — the bunch traveling through 3D space, chased by
   a camera with motion blur and depth of field, a ruler showing real `z`
@@ -21,6 +21,16 @@ movies — containing:
 * **Convex-hull envelopes** — every view (and every HUD panel) wraps the
   ensemble in a soft-metallic convex hull recomputed *every frame*, so you
   watch the beam envelope rotate, shear and breathe as the bunch propagates.
+* **Multi-beam comparison** — pass several track files and each becomes its
+  own color-coded beam (amber, cyan, green, magenta) rendered into the *same*
+  views: every 3D projection shows all the blobs on shared axes, every camera
+  HUD carries a color legend, and each beam's objects live in their own
+  Blender collection. Beams are resampled onto one shared clock.
+* **Helical orbits** — the real-space view separates bunch size from
+  centroid excursion, so beams orbiting centimeters away from the reference
+  axis are shown sweeping around the straight reference ruler (with per-beam
+  centroid guide trails), while the bunches themselves stay framed by the
+  chase camera.
 * **A polished timeline** — warm Kelvin-temperature studio lights ramp on
   (~0.75 s), the beam evolves along the beamline, the final state holds while
   the cameras keep orbiting, and the lights fade to black (~1.5 s) leaving
@@ -95,6 +105,10 @@ bunchrender examples/gaussian_beam.txt --render --cameras beam,xxpy --format png
 # Superimpose the example beamline geometry
 bunchrender examples/gaussian_beam.txt --render \
     --elements examples/beamline_solenoids.wrl
+
+# Compare two beams (e.g. on-axis vs. a 30 mm helical orbit) in every view
+bunchrender examples/gaussian_beam.txt examples/gaussian_beam_helix.txt \
+    --render --labels "reference,helical"
 ```
 
 By default **only the `.blend` is produced**; `--render` switches on the fully
@@ -201,7 +215,8 @@ Cameras orbit through the entire timeline, including the hold and fades.
 ## Options
 
 ```text
-bunchrender INPUT [-o out.blend]
+bunchrender INPUT [INPUT2 ...] [-o out.blend]
+  --labels A,B            display names for the beams (default: file names)
   --local                 use local Blender instead of Docker
   --blender PATH          Blender executable (implies --local)
   --docker-image IMAGE    alternative Docker image with `blender` on PATH
@@ -228,12 +243,20 @@ bunchrender INPUT [-o out.blend]
 
 `examples/gaussian_beam.txt` is a 150-muon Gaussian bunch tracked through a
 uniform focusing channel — the x–x′ and y–y′ ellipses rotate at different
-rates as the bunch flies, so every projection visibly evolves. Regenerate
+rates as the bunch flies, so every projection visibly evolves.
+`examples/gaussian_beam_helix.txt` is a second bunch whose centroid executes
+a 30 mm-radius helical orbit around the reference axis. Regenerate either
 (or emit a per-track CSV folder) with:
 
 ```bash
 python3 examples/make_gaussian_beam.py --particles 300 --stations 80 --csv-dir tracks_csv
+python3 examples/make_gaussian_beam.py --orbit-radius 30 --orbit-wavelength 1500 \
+    --out examples/gaussian_beam_helix.txt
 ```
+
+When several beams are loaded, particle caps are split between them
+(`--max-particles` total) and station axes are normalized over all beams so
+the blobs are directly comparable.
 
 `examples/beamline_solenoids.wrl` and `examples/beamline_elements.csv` are
 matching beamline layouts in both supported geometry formats:

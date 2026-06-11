@@ -312,19 +312,26 @@ def load_tracks(path, drift_length=2000.0):
     return tracks
 
 
-def resample(tracks, n_samples=100, max_particles=300):
+def time_range(tracks):
+    """(t_start, t_end) covered by a set of tracks."""
+    return (min(tr["t"][0] for tr in tracks),
+            max(tr["t"][-1] for tr in tracks))
+
+
+def resample(tracks, n_samples=100, max_particles=300, t_range=None):
     """Resample all tracks onto a common, uniform time grid.
 
     Returns a JSON-serializable bundle:
     ``times`` [S], ``pos`` [S][N][3] (mm), ``mom`` [S][N][3] (MeV/c).
     Tracks are clamped to their first/last point outside their own time span.
+    ``t_range`` overrides the grid span (used to put several beams on one
+    shared clock).
     """
     if len(tracks) > max_particles:
         stride = (len(tracks) + max_particles - 1) // max_particles
         tracks = tracks[::stride]
 
-    t0 = min(tr["t"][0] for tr in tracks)
-    t1 = max(tr["t"][-1] for tr in tracks)
+    t0, t1 = t_range if t_range is not None else time_range(tracks)
     if t1 <= t0:
         raise TrackError("track data has zero time span; cannot animate")
     times = [t0 + (t1 - t0) * s / (n_samples - 1) for s in range(n_samples)]

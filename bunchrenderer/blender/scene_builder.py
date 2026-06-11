@@ -37,16 +37,23 @@ STATION_SPACING = 14.0
 STATION_COLS = 3
 STATION_ORIGIN = (-STATION_SPACING, -30.0)  # x of first column, y of first row
 BEAM_LENGTH = 28.0       # corridor length in blender units
-BEAM_HALF_TRANSVERSE = 1.2
+BEAM_HALF_TRANSVERSE = 1.2   # target visual half-size of the bunch itself
+BEAM_ORBIT_HALF = 4.0    # max visual excursion of the centroid orbit
 BEAM_HEIGHT = 1.6
 
 PALETTE = {
-    "hull": (0.55, 0.60, 0.68),
-    "beam_particle": (1.0, 0.62, 0.18),
-    "phase_particle": (0.20, 0.85, 1.0),
     "axis": (0.82, 0.84, 0.88),
     "text": (0.92, 0.94, 1.0),
 }
+
+# One color pair per beam (particles / soft-metallic hull tint), used
+# consistently across the real-space view, stations and HUD panels.
+BEAM_COLORS = [
+    {"particle": (1.0, 0.62, 0.18), "hull": (0.72, 0.58, 0.42)},  # amber
+    {"particle": (0.20, 0.85, 1.0), "hull": (0.45, 0.60, 0.75)},  # cyan
+    {"particle": (0.45, 1.0, 0.45), "hull": (0.48, 0.68, 0.50)},  # green
+    {"particle": (1.0, 0.45, 0.85), "hull": (0.70, 0.50, 0.65)},  # magenta
+]
 
 
 def parse_args():
@@ -433,14 +440,34 @@ def fmt(v):
 # --------------------------------------------------------------------------
 # Phase-space channels
 
-def compute_channels(data):
-    """Per-sample, per-particle phase-space coordinates from pos/mom arrays."""
-    pos, mom = data["pos"], data["mom"]
+def combined_centroids(beams):
+    """Per-sample centroid over the particles of *all* beams: [S][3] in mm."""
+    S = len(beams[0]["pos"])
+    out = []
+    for s in range(S):
+        acc, n = [0.0, 0.0, 0.0], 0
+        for beam in beams:
+            for p in beam["pos"][s]:
+                acc[0] += p[0]
+                acc[1] += p[1]
+                acc[2] += p[2]
+                n += 1
+        out.append([a / n for a in acc])
+    return out
+
+
+def compute_channels(beam, centroids):
+    """Per-sample, per-particle phase-space coordinates for one beam.
+
+    dz is measured against the combined multi-beam centroid so that a
+    longitudinal offset between beams stays visible.
+    """
+    pos, mom = beam["pos"], beam["mom"]
     S, N = len(pos), len(pos[0])
     ch = {k: [[0.0] * N for _ in range(S)] for k in
           ("x", "y", "xp", "yp", "dz", "pz")}
     for s in range(S):
-        zc = sum(p[2] for p in pos[s]) / N
+        zc = centroids[s][2]
         for i in range(N):
             x, y, z = pos[s][i]
             px, py, pz = mom[s][i]
@@ -473,10 +500,11 @@ VIEW_DEFS = {
 VIEW_ORDER = ["xxpy", "xxpyp", "xyyp", "xpyyp", "zpzx", "zpzy"]
 
 
-def axis_norm(channel_data):
-    """Symmetric center/scale so the full evolution fits in the station cube."""
-    lo = min(min(row) for row in channel_data)
-    hi = max(max(row) for row in channel_data)
+def axis_norm(channel_data_per_beam):
+    """Symmetric center/scale fitting *all* beams in the station cube, so a
+    station's axes are shared and the beams are directly comparable."""
+    lo = min(min(min(row) for row in ch) for ch in channel_data_per_beam)
+    hi = max(max(max(row) for row in ch) for ch in channel_data_per_beam)
     center = 0.5 * (lo + hi)
     half = max(0.5 * (hi - lo), 1e-9)
     scale = STATION_HALF / (half * 1.05)
@@ -491,8 +519,10 @@ class Builder:
         self.args = args
         with open(args.data) as fh:
             self.data = json.load(fh)
+        self.beams = self.data["beams"]
+        self.n_beams = len(self.beams)
         self.S = self.data["meta"]["n_samples"]
-        self.N = self.data["meta"]["n_particles"]
+        self.centroids = combined_centroids(self.beams)  # [S][3] mm
 
         # Timeline: lights ramp on, the beam evolves, the final state holds
         # (cameras keep orbiting), then the lights fade to black.
@@ -506,9 +536,10 @@ class Builder:
         self.sample_frames = [f0 + (self.evo_frames - 1) * s / (self.S - 1)
                               for s in range(self.S)]
         # Bunch centroid z [mm] per sample, for the HUD z-readouts.
-        self.cz = [sum(p[2] for p in row) / self.N for row in self.data["pos"]]
+        self.cz = [c[2] for c in self.centroids]
 
         self.cameras = {}
+        self.beam_cols = []
         self.mats = {}
         self.lights = []
         self.hud_cols = {}
@@ -585,15 +616,26 @@ class Builder:
             print(f"[scene_builder] compositor glare skipped: {exc}")
 
     def setup_materials(self):
-        self.mats["hull"] = make_material(
-            "BR_Hull", PALETTE["hull"], metallic=1.0, roughness=0.32,
-            alpha=0.42, coat=0.25)
-        self.mats["beam_particle"] = make_material(
-            "BR_BeamParticle", PALETTE["beam_particle"], metallic=0.6,
-            roughness=0.3, emission=PALETTE["beam_particle"], emission_strength=2.2)
-        self.mats["phase_particle"] = make_material(
-            "BR_PhaseParticle", PALETTE["phase_particle"], metallic=0.6,
-            roughness=0.3, emission=PALETTE["phase_particle"], emission_strength=3.0)
+        for b in range(self.n_beams):
+            c = BEAM_COLORS[b % len(BEAM_COLORS)]
+            self.mats[f"particle{b}"] = make_material(
+                f"BR_Particle{b}", c["particle"], metallic=0.6, roughness=0.3,
+                emission=c["particle"], emission_strength=2.5)
+            self.mats[f"hull{b}"] = make_material(
+                f"BR_Hull{b}", c["hull"], metallic=1.0, roughness=0.32,
+                alpha=0.42, coat=0.25)
+            self.mats[f"hud_particle{b}"] = make_material(
+                f"BR_HudParticle{b}", c["particle"],
+                emission=c["particle"], emission_strength=5.0)
+            self.mats[f"hud_hull{b}"] = make_material(
+                f"BR_HudHull{b}", c["hull"], alpha=0.20,
+                emission=c["hull"], emission_strength=0.5)
+            self.mats[f"legend{b}"] = make_material(
+                f"BR_Legend{b}", c["particle"],
+                emission=c["particle"], emission_strength=2.0)
+            self.mats[f"guide{b}"] = make_material(
+                f"BR_Guide{b}", c["particle"], emission=c["particle"],
+                emission_strength=0.6)
         self.mats["axis"] = make_material(
             "BR_Axis", PALETTE["axis"], metallic=0.9, roughness=0.35)
         self.mats["text"] = make_material(
@@ -603,16 +645,7 @@ class Builder:
             "BR_Floor", (0.030, 0.032, 0.038), metallic=0.85, roughness=0.28)
         self.mats["pedestal"] = make_material(
             "BR_Pedestal", (0.06, 0.065, 0.075), metallic=0.7, roughness=0.4)
-        self.mats["guide"] = make_material(
-            "BR_Guide", (0.4, 0.7, 1.0), emission=(0.4, 0.7, 1.0),
-            emission_strength=0.6)
         # Camera-locked HUD overlays (self-emissive: unaffected by light fades).
-        self.mats["hud_particle"] = make_material(
-            "BR_HudParticle", PALETTE["phase_particle"],
-            emission=PALETTE["phase_particle"], emission_strength=5.0)
-        self.mats["hud_hull"] = make_material(
-            "BR_HudHull", (0.45, 0.75, 0.95), alpha=0.22,
-            emission=(0.45, 0.75, 0.95), emission_strength=0.5)
         self.mats["hud_frame"] = make_material(
             "BR_HudFrame", (0.3, 0.7, 0.9), emission=(0.3, 0.7, 0.9),
             emission_strength=1.4)
@@ -642,62 +675,92 @@ class Builder:
     # -- beam (real space) view ---------------------------------------------
 
     def build_beam_view(self):
-        pos = self.data["pos"]
-        S, N = self.S, self.N
-        xs = [p[0] for row in pos for p in row]
-        ys = [p[1] for row in pos for p in row]
-        zs = [p[2] for row in pos for p in row]
-        x0 = sum(xs) / len(xs)
-        y0 = sum(ys) / len(ys)
+        S = self.S
+        cents = self.centroids
+        zs = [p[2] for beam in self.beams for row in beam["pos"] for p in row]
         zmin, zmax = min(zs), max(zs)
         s_long = BEAM_LENGTH / max(zmax - zmin, 1e-9)
-        half_dev = max(max(abs(v - x0) for v in xs),
-                       max(abs(v - y0) for v in ys), 1e-9)
-        s_trans = BEAM_HALF_TRANSVERSE / half_dev
+
+        # Decompose transverse motion: "spread" is each bunch's size around
+        # its own traveling centroid; "orbit" is how far any beam's centroid
+        # strays from the static reference (helical orbits, inter-beam
+        # separation). One uniform transverse scale keeps geometry faithful:
+        # the bunch targets BEAM_HALF_TRANSVERSE units, the orbit may use up
+        # to BEAM_ORBIT_HALF.
+        cx0 = sum(c[0] for c in cents) / S
+        cy0 = sum(c[1] for c in cents) / S
+        beam_cents = []  # per-beam centroid path [S][2] (transverse, mm)
+        spread, orbit, sep = 1e-9, 1e-9, 0.0
+        for beam in self.beams:
+            bc = []
+            for s, row in enumerate(beam["pos"]):
+                n = len(row)
+                bx = sum(p[0] for p in row) / n
+                by = sum(p[1] for p in row) / n
+                bc.append((bx, by))
+                orbit = max(orbit, abs(bx - cx0), abs(by - cy0))
+                sep = max(sep, abs(bx - cents[s][0]), abs(by - cents[s][1]))
+                for p in row:
+                    spread = max(spread, abs(p[0] - bx), abs(p[1] - by))
+            beam_cents.append(bc)
+        s_trans = min(BEAM_HALF_TRANSVERSE / spread, BEAM_ORBIT_HALF / orbit)
         exag = s_trans / s_long
+        ext_t = (orbit + spread) * s_trans
+        height = max(BEAM_HEIGHT, FLOOR_Z + 1.2 + ext_t)
 
         def to_world(p):
-            return ((p[0] - x0) * s_trans,
+            return ((p[0] - cx0) * s_trans,
                     (p[2] - zmin) * s_long,
-                    BEAM_HEIGHT + (p[1] - y0) * s_trans)
+                    height + (p[1] - cy0) * s_trans)
 
-        coords = [[to_world(p) for p in row] for row in pos]
-        make_view_objects("beam", coords, self.sample_frames, (0, 0, 0),
-                          radius=0.045, particle_mat=self.mats["beam_particle"],
-                          hull_mat=self.mats["hull"], with_hull=self.with_hull)
-
-        centroids = [Vector((sum(c[0] for c in row) / N,
-                             sum(c[1] for c in row) / N,
-                             sum(c[2] for c in row) / N))
-                     for row in coords]
-
-        # Camera rig: an empty rides the bunch centroid; the camera is parented
-        # to it at an offset and tracks it, so motion blur comes for free.
-        target = make_empty("BeamTarget", centroids[0])
+        # Camera rig: an empty rides the combined centroid; the camera is
+        # parented to it at an offset and tracks it, so motion blur comes for
+        # free and helical orbits keep the bunches framed. The offset scales
+        # with how far content strays from the combined centroid.
+        cpath = [Vector(to_world(c)) for c in cents]
+        target = make_empty("BeamTarget", cpath[0])
         for s, frame in enumerate(self.sample_frames):
-            target.location = centroids[s]
+            target.location = cpath[s]
             target.keyframe_insert("location", frame=frame)
         set_interpolation(target.animation_data, "LINEAR")
 
         cam = make_camera("Cam_beam", (0, 0, 0), target=target, lens=46)
         cam.parent = target
-        # Offset chosen to stay outside typical beam-pipe ghost geometry.
-        cam.location = (-5.4, -8.2, 3.2)
+        # Half-coverage of the base framing (lens 46, offset 10.3) is ~2.27
+        # units at the target plane; scale the offset so the farthest bunch
+        # edge stays in frame.
+        dmax = (sep + spread) * s_trans
+        off = min(2.5, max(0.55, 1.2 * dmax / 2.27))
+        # Base offset chosen to stay outside typical beam-pipe ghost geometry.
+        cam.location = (-5.4 * off, -8.2 * off, 3.2 * off)
         cam.data.dof.use_dof = True
         cam.data.dof.focus_object = target
         cam.data.dof.aperture_fstop = 4.0
         self.cameras["beam"] = cam
 
-        # Faint guide curve showing the full centroid trajectory.
-        curve = bpy.data.curves.new("BeamGuide", "CURVE")
-        curve.dimensions = "3D"
-        curve.bevel_depth = 0.009
-        curve.materials.append(self.mats["guide"])
-        spline = curve.splines.new("POLY")
-        spline.points.add(len(centroids) - 1)
-        for pt, c in zip(spline.points, centroids):
-            pt.co = (c.x, c.y, c.z, 1.0)
-        link(bpy.data.objects.new("BeamGuide", curve))
+        for b, beam in enumerate(self.beams):
+            bcol = self.beam_collection(b)
+            coords = [[to_world(p) for p in row] for row in beam["pos"]]
+            objs = make_view_objects(
+                f"beam_b{b}", coords, self.sample_frames, (0, 0, 0),
+                radius=0.045, particle_mat=self.mats[f"particle{b}"],
+                hull_mat=self.mats[f"hull{b}"], with_hull=self.with_hull)
+            # Per-beam guide curve tracing this beam's centroid orbit.
+            n = len(coords[0])
+            bpath = [Vector((sum(c[0] for c in row) / n,
+                             sum(c[1] for c in row) / n,
+                             sum(c[2] for c in row) / n)) for row in coords]
+            curve = bpy.data.curves.new(f"BeamGuide_b{b}", "CURVE")
+            curve.dimensions = "3D"
+            curve.bevel_depth = 0.009
+            curve.materials.append(self.mats[f"guide{b}"])
+            spline = curve.splines.new("POLY")
+            spline.points.add(len(bpath) - 1)
+            for pt, c in zip(spline.points, bpath):
+                pt.co = (c.x, c.y, c.z, 1.0)
+            objs.append(link(bpy.data.objects.new(f"BeamGuide_b{b}", curve)))
+            for obj in objs:
+                move_to_collection(obj, bcol)
 
         # Labeled axis tripod and titles that ride along with the bunch
         # (parented to the camera target) so they stay in frame.
@@ -720,9 +783,11 @@ class Builder:
         self.add_hud_text(col, cam, "beam_caption",
                           f"transverse scale ×{exag:.0f}", 0.085, 0.0, 0.655, 4.5)
         self.add_z_readout(col, cam, "beam", 0.085, 0.0, 0.55, 4.5)
+        self.add_legend(col, cam, "beam", -1.62, 0.82, 4.5, 0.105)
 
-        # Static ruler along the corridor with real-world z positions.
-        origin = Vector(centroids[0])
+        # Straight reference axis at the nominal beamline (x = y = 0), with a
+        # ruler of real-world z positions; helical orbits sweep around it.
+        origin = Vector(to_world((0.0, 0.0, zmin)))
         make_arrow("beam_ax_z", origin, (0, 1, 0), BEAM_LENGTH + 1.5, 0.016, axmat)
         for k in range(5):
             f = k / 4.0
@@ -736,12 +801,12 @@ class Builder:
         # Corridor lighting: warm key lights along the flight path with a
         # slightly cooler (but still warm) rim from the side.
         for k, yfrac in enumerate((0.15, 0.5, 0.85)):
-            loc = (2.5, BEAM_LENGTH * yfrac, BEAM_HEIGHT + 8.0)
+            loc = (2.5, BEAM_LENGTH * yfrac, height + 8.0)
             self.lights.append(make_area_light(
-                f"BeamKey_{k}", loc, target, size=9.0, power=3000,
+                f"BeamKey_{k}", loc, target, size=9.0 + ext_t, power=3000,
                 temperature=3100.0))
         self.lights.append(make_area_light(
-            "BeamRim", (-6.0, BEAM_LENGTH * 0.7, BEAM_HEIGHT + 1.5),
+            "BeamRim", (-6.0 - ext_t, BEAM_LENGTH * 0.7, height + 1.5),
             target, size=12.0, power=1500, temperature=3900.0))
 
         self.build_elements(to_world, s_trans, s_long, cam)
@@ -753,6 +818,24 @@ class Builder:
         bpy.context.scene.collection.children.link(col)
         self.hud_cols[label] = col
         return col
+
+    def beam_collection(self, b):
+        """Per-beam collection so each input's objects can be toggled."""
+        while len(self.beam_cols) <= b:
+            i = len(self.beam_cols)
+            col = bpy.data.collections.new(f"Beam{i}_{self.beams[i]['label']}")
+            bpy.context.scene.collection.children.link(col)
+            self.beam_cols.append(col)
+        return self.beam_cols[b]
+
+    def add_legend(self, col, cam, prefix, x, y, depth, size):
+        """Color-coded beam labels, fixed to the top-left of the frame."""
+        if self.n_beams < 2:
+            return
+        for b, beam in enumerate(self.beams):
+            self.add_hud_text(col, cam, f"{prefix}_legend{b}", beam["label"],
+                              size, x, y - b * size * 1.6, depth,
+                              material=self.mats[f"legend{b}"], align_x="LEFT")
 
     def add_hud_text(self, col, cam, name, body, size, x, y, depth,
                      material=None, align_x="CENTER"):
@@ -801,41 +884,49 @@ class Builder:
                     t.keyframe_insert(prop, frame=fb + 1)
             set_interpolation(t.animation_data, "CONSTANT")
 
-    def build_station_hud(self, vid, cam, axes, coords):
-        """Heads-up display for a 3D station camera: title, z-readout, and the
-        three 2D sub-projections of this view as small panels on the right."""
+    def build_station_hud(self, vid, cam, axes, beam_coords):
+        """Heads-up display for a 3D station camera: title, z-readout, beam
+        legend, and the three 2D sub-projections of this view as small panels
+        on the right (every beam overlaid in its own color)."""
         col = self.hud_collection(vid)
         self.add_hud_text(col, cam, f"{vid}_title", VIEW_DEFS[vid]["title"],
                           0.105, 0.0, 0.62, 3.0)
         self.add_z_readout(col, cam, vid, 0.075, 0.0, 0.52, 3.0)
+        self.add_legend(col, cam, vid, -1.28, 0.64, 3.0, 0.07)
         if not self.with_hud:
             return
 
         depth, px, half = 3.0, 1.02, 0.17
         ys = (0.50, 0.02, -0.46)
         short = [label.split(" [")[0] for _, label in axes]
-        for pi, (a, b) in enumerate(((0, 1), (0, 2), (1, 2))):
+        for pi, (ia, ib) in enumerate(((0, 1), (0, 2), (1, 2))):
             pos = (px, ys[pi], -depth)
             scale = half * 0.95 / STATION_HALF
-            pcoords = [[(v[a] * scale, v[b] * scale, 0.0) for v in row]
-                       for row in coords]
-            cloud = make_cloud(f"{vid}_hud{pi}", pcoords, self.sample_frames)
-            cloud.parent = cam
-            cloud.location = pos
-            mod = cloud.modifiers.new("Points", "NODES")
-            mod.node_group = points_node_group(
-                f"{vid}_hud{pi}_pts", 0.0065, self.mats["hud_particle"])
-            hull = bpy.data.objects.new(f"{vid}_hud{pi}_hull", cloud.data)
-            link(hull)
-            hull.parent = cam
-            hull.location = pos
-            hmod = hull.modifiers.new("Hull", "NODES")
-            hmod.node_group = hull_node_group(
-                f"{vid}_hud{pi}_hullgn", self.mats["hud_hull"])
-            try:
-                hull.cycles.use_deform_motion = False
-            except AttributeError:
-                pass
+            panel_objs = []
+            for b, coords in enumerate(beam_coords):
+                pcoords = [[(v[ia] * scale, v[ib] * scale, 0.0) for v in row]
+                           for row in coords]
+                cloud = make_cloud(f"{vid}_hud{pi}_b{b}", pcoords,
+                                   self.sample_frames)
+                cloud.parent = cam
+                cloud.location = pos
+                mod = cloud.modifiers.new("Points", "NODES")
+                mod.node_group = points_node_group(
+                    f"{vid}_hud{pi}_b{b}_pts", 0.0065,
+                    self.mats[f"hud_particle{b}"])
+                hull = bpy.data.objects.new(f"{vid}_hud{pi}_b{b}_hull",
+                                            cloud.data)
+                link(hull)
+                hull.parent = cam
+                hull.location = pos
+                hmod = hull.modifiers.new("Hull", "NODES")
+                hmod.node_group = hull_node_group(
+                    f"{vid}_hud{pi}_b{b}_hullgn", self.mats[f"hud_hull{b}"])
+                try:
+                    hull.cycles.use_deform_motion = False
+                except AttributeError:
+                    pass
+                panel_objs += [cloud, hull]
             frame = make_frame_rect(f"{vid}_hud{pi}_frame", half + 0.045,
                                     half + 0.045, 0.0035, self.mats["hud_frame"])
             link(frame)
@@ -845,10 +936,10 @@ class Builder:
                               2 * (half + 0.045), self.mats["hud_backdrop"])
             back.parent = cam
             back.location = (px, ys[pi], -depth - 0.015)
-            caption = self.add_hud_text(
-                col, cam, f"{vid}_hud{pi}_cap", f"{short[a]} – {short[b]}",
+            self.add_hud_text(
+                col, cam, f"{vid}_hud{pi}_cap", f"{short[ia]} – {short[ib]}",
                 0.052, px, ys[pi] - half - 0.075, depth)
-            for obj in (cloud, hull, frame, back):
+            for obj in panel_objs + [frame, back]:
                 overlay_only(obj)
                 move_to_collection(obj, col)
 
@@ -948,23 +1039,32 @@ class Builder:
                        STATION_ORIGIN[1] - row * STATION_SPACING, 0.0))
 
     def build_station(self, vid, index, channels):
+        """channels: one channel dict per beam (see compute_channels)."""
         vdef = VIEW_DEFS[vid]
         axes = vdef["axes"]
         center = self.station_center(index)
-        norms = [axis_norm(channels[ch]) for ch, _ in axes]
+        # Axes are normalized over all beams together, so both blobs share the
+        # same scale and are directly comparable.
+        norms = [axis_norm([ch[c] for ch in channels]) for c, _ in axes]
 
-        coords = []
-        for s in range(self.S):
-            row = []
-            for i in range(self.N):
-                vals = [(channels[ch][s][i] - norms[a][0]) * norms[a][2]
-                        for a, (ch, _) in enumerate(axes)]
-                row.append((vals[0], vals[1], vals[2]))
-            coords.append(row)
-
-        make_view_objects(vid, coords, self.sample_frames, center,
-                          radius=0.034, particle_mat=self.mats["phase_particle"],
-                          hull_mat=self.mats["hull"], with_hull=self.with_hull)
+        beam_coords = []
+        for b, ch in enumerate(channels):
+            n = len(ch["x"][0])
+            coords = []
+            for s in range(self.S):
+                row = []
+                for i in range(n):
+                    vals = [(ch[c][s][i] - norms[a][0]) * norms[a][2]
+                            for a, (c, _) in enumerate(axes)]
+                    row.append((vals[0], vals[1], vals[2]))
+                coords.append(row)
+            beam_coords.append(coords)
+            objs = make_view_objects(
+                f"{vid}_b{b}", coords, self.sample_frames, center,
+                radius=0.034, particle_mat=self.mats[f"particle{b}"],
+                hull_mat=self.mats[f"hull{b}"], with_hull=self.with_hull)
+            for obj in objs:
+                move_to_collection(obj, self.beam_collection(b))
 
         axmat, txmat = self.mats["axis"], self.mats["text"]
         tgt = make_empty(f"{vid}_target", center)
@@ -1003,7 +1103,7 @@ class Builder:
 
         # Title + z-readout + 2D sub-projection panels live on the camera as a
         # heads-up display, fixed in frame while the camera orbits.
-        self.build_station_hud(vid, cam, axes, coords)
+        self.build_station_hud(vid, cam, axes, beam_coords)
         make_cylinder(f"{vid}_pedestal", center + Vector((0, 0, FLOOR_Z + 0.2)),
                       radius=3.1, depth=0.4, material=self.mats["pedestal"])
         return center
@@ -1012,7 +1112,8 @@ class Builder:
         station_views = [v for v in VIEW_ORDER if v in self.views]
         if not station_views:
             return
-        channels = compute_channels(self.data)
+        channels = [compute_channels(beam, self.centroids)
+                    for beam in self.beams]
         centers = [self.build_station(vid, i, channels)
                    for i, vid in enumerate(station_views)]
 
@@ -1031,6 +1132,7 @@ class Builder:
         self.add_hud_text(col, cam, "overview_title",
                           "Phase space — all projections", 0.105, 0.0, 0.66, 3.0)
         self.add_z_readout(col, cam, "overview", 0.075, 0.0, 0.555, 3.0)
+        self.add_legend(col, cam, "overview", -1.3, 0.66, 3.0, 0.075)
 
         # Warm three-point studio rig (Kelvin temperatures, Blender >= 4.5).
         self.lights.append(make_area_light(

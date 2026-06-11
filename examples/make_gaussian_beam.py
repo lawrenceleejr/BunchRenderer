@@ -19,11 +19,13 @@ C_MM_PER_NS = 299.792458
 MUON_MASS_MEV = 105.6583755
 
 
-def generate(n_particles, n_stations, length_mm, p0, seed):
+def generate(n_particles, n_stations, length_mm, p0, seed,
+             orbit_radius=0.0, orbit_wavelength=1500.0):
     rng = random.Random(seed)
     sigma = {"x": 4.0, "xp": 2.5e-3, "y": 2.5, "yp": 1.5e-3, "dpp": 0.01}
     kx = 2 * math.pi / 2400.0   # betatron wavenumbers [rad/mm]
     ky = 2 * math.pi / 3600.0
+    kh = 2 * math.pi / orbit_wavelength  # helical-orbit wavenumber [rad/mm]
 
     particles = []
     for ev in range(1, n_particles + 1):
@@ -41,11 +43,17 @@ def generate(n_particles, n_stations, length_mm, p0, seed):
         s = length_mm * k / (n_stations - 1)
         cx, sx = math.cos(kx * s), math.sin(kx * s)
         cy, sy = math.cos(ky * s), math.sin(ky * s)
+        # Centroid helix around the reference orbit (zero radius = on-axis).
+        theta = kh * s
+        xc = orbit_radius * math.cos(theta)
+        yc = orbit_radius * math.sin(theta)
+        xpc = -orbit_radius * kh * math.sin(theta)
+        ypc = orbit_radius * kh * math.cos(theta)
         for pt in particles:
-            x = pt["x0"] * cx + pt["xp0"] / kx * sx
-            xp = -pt["x0"] * kx * sx + pt["xp0"] * cx
-            y = pt["y0"] * cy + pt["yp0"] / ky * sy
-            yp = -pt["y0"] * ky * sy + pt["yp0"] * cy
+            x = xc + pt["x0"] * cx + pt["xp0"] / kx * sx
+            xp = xpc - pt["x0"] * kx * sx + pt["xp0"] * cx
+            y = yc + pt["y0"] * cy + pt["yp0"] / ky * sy
+            yp = ypc - pt["y0"] * ky * sy + pt["yp0"] * cy
             p = pt["p"]
             pz = p / math.sqrt(1.0 + xp * xp + yp * yp)
             px, py = xp * pz, yp * pz
@@ -88,12 +96,17 @@ def main():
     ap.add_argument("--length", type=float, default=3000.0, help="channel length [mm]")
     ap.add_argument("--p0", type=float, default=200.0, help="reference momentum [MeV/c]")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--orbit-radius", type=float, default=0.0,
+                    help="helical orbit radius of the bunch centroid [mm]")
+    ap.add_argument("--orbit-wavelength", type=float, default=1500.0,
+                    help="helical orbit period along z [mm]")
     ap.add_argument("--out", default=str(Path(__file__).parent / "gaussian_beam.txt"))
     ap.add_argument("--csv-dir", default=None,
                     help="also write a directory of per-track CSV files")
     args = ap.parse_args()
 
-    rows = generate(args.particles, args.stations, args.length, args.p0, args.seed)
+    rows = generate(args.particles, args.stations, args.length, args.p0,
+                    args.seed, args.orbit_radius, args.orbit_wavelength)
     write_trackfile(rows, args.out)
     if args.csv_dir:
         write_csv_dir(rows, args.csv_dir)
