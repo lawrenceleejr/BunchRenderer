@@ -224,6 +224,10 @@ def _run_local(args, staging, builder_args):
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    # Announce which copy of the code is running: a non-editable
+    # `pip install .` snapshots the package, so after `git pull` a stale
+    # install is the usual cause of "I'm still seeing the old bug".
+    print(f"[bunchrender] {__version__} running from {_pkg_path()}")
     args.views = _validate_csv_list(args.views, VIEW_IDS, "--views")
     args.cameras = _validate_csv_list(args.cameras, CAMERA_IDS, "--cameras")
     args.frames = max(2, args.frames)

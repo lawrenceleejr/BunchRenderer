@@ -7,7 +7,7 @@ backend-path = ["_build"]
 
 [project]
 name = "bunchrenderer"
-version = "0.1.0"
+version = "0.2.0"
 description = "Render particle-beam track data (g4beamline / CSV) as animated, studio-lit Blender scenes: real-space flight, phase-space projections, and convex-hull beam envelopes."
 readme = "README.md"
 requires-python = ">=3.9"

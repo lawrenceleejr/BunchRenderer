@@ -14,7 +14,7 @@ import tarfile
 import zipfile
 
 NAME = "bunchrenderer"
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 METADATA = """\

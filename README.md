@@ -58,6 +58,13 @@ if no GPU device is found.
 is equivalent to `./bin/bunchrender …`. Movies land in `<output>_renders/`,
 one MP4 per camera, alongside the `.blend`.
 
+Prefer `pip install -e .` for a git clone — the editable install tracks your
+checkout, so a `git pull` takes effect immediately. A plain `pip install .`
+snapshots the code: after pulling you must reinstall, or the `bunchrender`
+command keeps running the old version (the CLI prints its version and source
+path at startup so you can tell). `./bin/bunchrender` always runs the
+checkout.
+
 ### Installing behind an internal pip index
 
 `pip install .` (and `pip install -e .`) needs **no network at all**: the
