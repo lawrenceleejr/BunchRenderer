@@ -14,10 +14,12 @@ renders movies — containing:
 * **3D projections of the 4D transverse phase space** — all four 3-subsets of
   `(x, x′, y, y′)`, plus the longitudinal projections `(Δz, Pz, x)` and
   `(Δz, Pz, y)`, each on its own lit pedestal with a slowly orbiting camera.
-* **A heads-up display on every station camera** — the view title and a live
-  `z = … m` readout locked to the frame (they don't rotate with the scene),
-  plus the three flat 2D sub-projections of that 3D view as small animated
-  panels along the right edge.
+* **A heads-up display on every camera** — the view title, a live `z = … m`
+  readout and the beam legend are **flat 2D text composited on top of each
+  frame** (rendered in a separate orthographic overlay scene and alpha-combined
+  in the compositor — no depth, no perspective, no motion blur), plus the
+  three 2D sub-projections of each 3D view as small animated panels along the
+  right edge.
 * **Convex-hull envelopes** — every view (and every HUD panel) wraps the
   ensemble in a soft-metallic convex hull recomputed *every frame*, so you
   watch the beam envelope rotate, shear and breathe as the bunch propagates.
@@ -76,12 +78,21 @@ With `--format png` each frame appears as `…/<camera>/frame_NNNN.png` the
 moment it finishes — open the folder and keep refreshing the newest file.
 With the default `--format mp4` the file grows during rendering but is only
 playable once its camera finishes (one MP4 per camera, so finished cameras
-are watchable while later ones still render). The terminal shows Blender's
-per-frame `Fra:NNN …` progress lines, and each camera announces its output
-path when it starts. The `.blend` is saved *before* rendering begins, and a
-crashed or interrupted render keeps everything rendered so far; only the
-hidden `.bunchrenderer-*` staging folder (input data for Blender) is
-temporary, and it is removed automatically.
+are watchable while later ones still render).
+
+The terminal shows a live progress bar with frame counts, per-camera
+position, elapsed time, ETA and the estimated total:
+
+```text
+[██████████··················]  38.2%  cam 3/8 xxpyp    935/2448f  elapsed 12:41  ETA 20:31  total ~33:12
+```
+
+Each camera announces its output path when it starts. Blender's raw output
+is teed to `<output>.log`; pass `-v/--verbose` to stream it instead of the
+bar. The `.blend` is saved *before* rendering begins, and a crashed or
+interrupted render keeps everything rendered so far; only the hidden
+`.bunchrenderer-*` staging folder (input data for Blender) is temporary, and
+it is removed automatically.
 
 Prefer `pip install -e .` for a git clone — the editable install tracks your
 checkout, so a `git pull` takes effect immediately. A plain `pip install .`
@@ -207,13 +218,16 @@ both.
 All stations animate in lock-step with the beam flight; the HUD `z` readout
 shows where along the beamline the displayed distribution lives. In-scene
 axis labels show units and the `[min, max]` ranges each station is normalized
-to. Titles, readouts and the 2D sub-projection panels are parented to each
-camera, so they stay fixed in the frame while the camera orbits.
+to. Titles, readouts, legends and panel captions are *not* objects in the 3D
+world: each camera has an `OV_<camera>` overlay scene of flat text that the
+compositor alpha-combines over the frame, so text is pixel-crisp and fixed
+in place while the camera moves.
 
-Each camera's overlay lives in a collection named `HUD_<camera>`; headless
-rendering enables the right one automatically. If you render a camera by hand
-inside Blender, enable its `HUD_*` collection (and disable the others) in the
-outliner.
+Headless rendering selects the right overlay and HUD-panel set per camera
+automatically. To render a camera by hand inside Blender: enable its
+`HUD_<camera>` collection (the 2D sub-projection panels), and point the
+second Render Layers node in the compositor at the matching `OV_<camera>`
+scene.
 
 ## Timeline
 

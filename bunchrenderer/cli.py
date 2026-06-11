@@ -9,10 +9,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
+from collections import deque
 from pathlib import Path
 
 from . import __version__, elements as elementslib, tracks as tracklib
@@ -48,6 +51,9 @@ def build_parser():
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
     ex = p.add_argument_group("execution")
+    ex.add_argument("-v", "--verbose", action="store_true",
+                    help="stream Blender's raw output instead of the progress "
+                         "bar (everything is always saved to the .log file)")
     ex.add_argument("--local", action="store_true",
                     help="use a local Blender install instead of Docker")
     ex.add_argument("--blender", default=None, metavar="PATH",
@@ -213,6 +219,163 @@ def _load_elements(args):
     return bundle
 
 
+def _fmt_dur(seconds):
+    if seconds is None:
+        return "--:--"
+    seconds = int(seconds)
+    h, rest = divmod(seconds, 3600)
+    m, s = divmod(rest, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+class _ProgressReporter:
+    """Parses Blender's output into a progress bar with ETA, teeing the raw
+    log to a file. Works with both Blender 4.x ('Fra:', 'Append frame') and
+    5.x ('cat | Saved: ...') console formats."""
+
+    RE_PLAN = re.compile(r"\[scene_builder\] render plan: (\d+) camera\(s\) x (\d+) frames")
+    RE_CAM = re.compile(r"\[scene_builder\] rendering camera '([^']+)'")
+    RE_DONE = re.compile(r"Saved: '|Append frame \d")
+    RE_FRA = re.compile(r"\bFra:(\d+)")
+    BAR_W = 26
+
+    def __init__(self, log_path, verbose):
+        self.verbose = verbose
+        self.log = open(log_path, "w", errors="replace")
+        self.tty = sys.stdout.isatty() and not verbose
+        self.t0 = time.monotonic()
+        self.t_render = None
+        self.n_cams = self.frames_per_cam = self.total = self.done = 0
+        self.cam_idx = 0
+        self.cam_label = ""
+        self.recent = deque(maxlen=48)  # timestamps of recent frame completions
+        self.last_draw = 0.0
+        self.tail = deque(maxlen=30)
+        self.bar_active = False
+        self.build_announced = False
+
+    def _emit(self, text):
+        if self.bar_active:
+            sys.stdout.write("\r\x1b[K")
+            self.bar_active = False
+        sys.stdout.write(text.rstrip() + "\n")
+        sys.stdout.flush()
+
+    def feed(self, line):
+        self.log.write(line)
+        s = line.strip()
+        if s:
+            self.tail.append(s)
+        if self.verbose:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+
+        m = self.RE_PLAN.search(s)
+        if m:
+            self.n_cams, self.frames_per_cam = int(m.group(1)), int(m.group(2))
+            self.total = self.n_cams * self.frames_per_cam
+            self.t_render = time.monotonic()
+            if not self.verbose:
+                self._emit(f"[bunchrender] rendering {self.n_cams} camera(s) × "
+                           f"{self.frames_per_cam} frames = {self.total} frames")
+            return
+        m = self.RE_CAM.search(s)
+        if m:
+            self.cam_idx += 1
+            self.cam_label = m.group(1)
+            if not self.verbose:
+                self._emit(s)
+            self._progress()
+            return
+        if self.RE_DONE.search(s):
+            self.done += 1
+            self.recent.append(time.monotonic())
+            self._progress()
+            return
+        if self.verbose:
+            return
+        if "[scene_builder] saved" in s and not self.build_announced:
+            self.build_announced = True
+            self._emit(f"[bunchrender] scene built in "
+                       f"{_fmt_dur(time.monotonic() - self.t0)}")
+            self._emit(s)
+            return
+        if (s.startswith("[scene_builder]") or "Traceback" in s
+                or s.startswith("Error:")):
+            self._emit(s)
+
+    def _eta(self):
+        now = time.monotonic()
+        if len(self.recent) >= 2:
+            rate = (len(self.recent) - 1) / max(self.recent[-1] - self.recent[0], 1e-6)
+        elif self.done and self.t_render:
+            rate = self.done / max(now - self.t_render, 1e-6)
+        else:
+            return None, None
+        remaining = (self.total - self.done) / max(rate, 1e-9)
+        return remaining, (now - self.t0) + remaining
+
+    def _progress(self):
+        if self.verbose or not self.total:
+            return
+        now = time.monotonic()
+        if self.tty:
+            if now - self.last_draw < 0.25 and self.done < self.total:
+                return
+            self.last_draw = now
+            frac = self.done / self.total
+            filled = int(frac * self.BAR_W)
+            bar = "█" * filled + "·" * (self.BAR_W - filled)
+            remaining, total_est = self._eta()
+            sys.stdout.write(
+                f"\r\x1b[K[{bar}] {frac * 100:5.1f}%  "
+                f"cam {self.cam_idx}/{self.n_cams} {self.cam_label:<8.8s} "
+                f"{self.done}/{self.total}f  "
+                f"elapsed {_fmt_dur(now - self.t0)}  "
+                f"ETA {_fmt_dur(remaining)}  total ~{_fmt_dur(total_est)}")
+            sys.stdout.flush()
+            self.bar_active = True
+        else:
+            # No TTY: a plain line every ~5% / 60 s, suitable for log files.
+            step = max(1, self.total // 20)
+            if self.done % step and now - self.last_draw < 60:
+                return
+            self.last_draw = now
+            remaining, total_est = self._eta()
+            print(f"[bunchrender] {self.done / self.total * 100:5.1f}% "
+                  f"({self.done}/{self.total} frames, cam {self.cam_idx}/"
+                  f"{self.n_cams} {self.cam_label}) elapsed "
+                  f"{_fmt_dur(now - self.t0)} ETA {_fmt_dur(remaining)} "
+                  f"total ~{_fmt_dur(total_est)}", flush=True)
+
+    def finish(self, rc):
+        if self.bar_active:
+            sys.stdout.write("\n")
+            self.bar_active = False
+        self.log.close()
+        now = time.monotonic()
+        if rc != 0 and not self.verbose:
+            print("[bunchrender] Blender failed; last output lines:")
+            for s in list(self.tail)[-15:]:
+                print(f"    {s}")
+        elif self.done and self.t_render:
+            dt = now - self.t_render
+            print(f"[bunchrender] rendered {self.done} frames in {_fmt_dur(dt)} "
+                  f"({dt / self.done:.1f} s/frame)")
+
+
+def _stream(cmd, reporter):
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True,
+                            errors="replace", bufsize=1)
+    try:
+        for line in proc.stdout:
+            reporter.feed(line)
+    finally:
+        proc.stdout.close()
+    return proc.wait()
+
+
 def _image_exists(image):
     r = subprocess.run(["docker", "image", "inspect", image],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -230,7 +393,7 @@ def _ensure_default_image():
                     "-t", DEFAULT_IMAGE, str(context)], check=True)
 
 
-def _run_docker(args, staging, out_path, render_dir, builder_args):
+def _docker_cmd(args, staging, out_path, render_dir, builder_args):
     if shutil.which("docker") is None:
         raise SystemExit("error: docker not found on PATH. Install Docker, or use "
                          "--local to run a local Blender install.")
@@ -249,7 +412,7 @@ def _run_docker(args, staging, out_path, render_dir, builder_args):
     cmd += ["-w", "/work", image,
             "blender", "-b", "--factory-startup",
             "--python", "/work/scene_builder.py", "--"] + builder_args
-    return subprocess.call(cmd)
+    return cmd
 
 
 def _run_local(args, staging, builder_args):
@@ -257,9 +420,8 @@ def _run_local(args, staging, builder_args):
     if shutil.which(blender) is None and not Path(blender).exists():
         raise SystemExit(f"error: Blender executable not found: {blender!r}. "
                          "Use --blender PATH to point at your install.")
-    cmd = [blender, "-b", "--factory-startup",
-           "--python", str(staging / "scene_builder.py"), "--"] + builder_args
-    return subprocess.call(cmd)
+    return [blender, "-b", "--factory-startup",
+            "--python", str(staging / "scene_builder.py"), "--"] + builder_args
 
 
 def main(argv=None):
@@ -323,13 +485,19 @@ def main(argv=None):
         if use_local:
             builder_args = _builder_args(args, staging / "data.json",
                                          out_path, render_dir)
-            rc = _run_local(args, staging, builder_args)
+            cmd = _run_local(args, staging, builder_args)
         else:
             builder_args = _builder_args(args, "/work/data.json",
                                          f"/out/{out_path.name}", "/render")
-            rc = _run_docker(args, staging, out_path, render_dir, builder_args)
+            cmd = _docker_cmd(args, staging, out_path, render_dir, builder_args)
+
+        log_path = out_path.with_suffix(".log")
+        reporter = _ProgressReporter(log_path, args.verbose)
+        rc = _stream(cmd, reporter)
+        reporter.finish(rc)
         if rc != 0:
-            raise SystemExit(f"error: Blender exited with status {rc}")
+            raise SystemExit(f"error: Blender exited with status {rc} "
+                             f"(full log: {log_path})")
 
         if not out_path.exists():
             raise SystemExit("error: Blender did not produce a .blend file")
@@ -341,6 +509,8 @@ def main(argv=None):
                 print(f"[bunchrender] {len(produced)} render file(s) in {render_dir}")
             else:
                 print("[bunchrender] warning: no render output was produced")
+        print(f"[bunchrender] total time {_fmt_dur(time.monotonic() - reporter.t0)} "
+              f"(Blender log: {log_path})")
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return 0

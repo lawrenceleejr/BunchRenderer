@@ -221,7 +221,7 @@ def make_view_objects(name, coords, sample_frames, center, radius,
 
 
 def make_text(name, body, size, location, material, target=None,
-              align_x="CENTER", extrude=0.012, parent=None):
+              align_x="CENTER", extrude=0.0, parent=None):
     cu = bpy.data.curves.new(name, "FONT")
     cu.body = body
     cu.size = size
@@ -540,6 +540,10 @@ class Builder:
 
         self.cameras = {}
         self.beam_cols = []
+        self.overlays = {}      # camera label -> {"scene", "lens"}
+        self.comp_ov_rl = None  # compositor RLayers node showing the overlay
+        w, _, h = args.resolution.lower().partition("x")
+        self.aspect = int(h or 1080) / int(w or 1920)
         self.mats = {}
         self.lights = []
         self.hud_cols = {}
@@ -610,8 +614,18 @@ class Builder:
                 glare.threshold = 1.0
                 glare.size = 8
                 glare.mix = -0.7
+            # Flat text overlays render in a separate ortho scene and are
+            # alpha-composited over each frame, after the glare pass so the
+            # text stays pixel-crisp. The overlay RLayers node is pointed at
+            # the active camera's OV_* scene (see set_active_hud).
+            alpha = tree.nodes.new("CompositorNodeAlphaOver")
+            ov_rl = tree.nodes.new("CompositorNodeRLayers")
+            rgba = [s for s in alpha.inputs if s.type == "RGBA"]
             tree.links.new(rl.outputs["Image"], glare.inputs["Image"])
-            tree.links.new(glare.outputs["Image"], out_node.inputs[0])
+            tree.links.new(glare.outputs["Image"], rgba[0])
+            tree.links.new(ov_rl.outputs["Image"], rgba[1])
+            tree.links.new(alpha.outputs["Image"], out_node.inputs[0])
+            self.comp_ov_rl = ov_rl
         except Exception as exc:
             print(f"[scene_builder] compositor glare skipped: {exc}")
 
@@ -645,7 +659,19 @@ class Builder:
             "BR_Floor", (0.030, 0.032, 0.038), metallic=0.85, roughness=0.28)
         self.mats["pedestal"] = make_material(
             "BR_Pedestal", (0.06, 0.065, 0.075), metallic=0.7, roughness=0.4)
-        # Camera-locked HUD overlays (self-emissive: unaffected by light fades).
+        # Flat composited text overlays (rendered unlit in the OV_* scenes,
+        # so pure emission sets the brightness).
+        self.mats["ov_text"] = make_material(
+            "BR_OvText", (1.0, 1.0, 1.0), emission=(1.0, 1.0, 1.0),
+            emission_strength=5.0)
+        for b in range(self.n_beams):
+            c = BEAM_COLORS[b % len(BEAM_COLORS)]
+            # Lower strength than the white text keeps the hue from clipping
+            # to white through the AgX view transform.
+            self.mats[f"ov_legend{b}"] = make_material(
+                f"BR_OvLegend{b}", c["particle"], emission=c["particle"],
+                emission_strength=1.8)
+        # Camera-locked HUD panel furniture.
         self.mats["hud_frame"] = make_material(
             "BR_HudFrame", (0.3, 0.7, 0.9), emission=(0.3, 0.7, 0.9),
             emission_strength=1.4)
@@ -776,14 +802,15 @@ class Builder:
         make_text("beam_lbl_zdir", "z", 0.3, tripod + Vector((0, 1.85, 0)),
                   txmat, target=cam, parent=target)
 
-        # Title block as a camera-locked overlay (fixed in frame).
-        col = self.hud_collection("beam")
-        self.add_hud_text(col, cam, "beam_title", "Real space — beam frame",
+        # Title block as a flat composited overlay (fixed in frame).
+        self.hud_collection("beam")
+        self.make_overlay("beam", lens=46.0)
+        self.add_hud_text("beam", "beam_title", "Real space — beam frame",
                           0.15, 0.0, 0.80, 4.5)
-        self.add_hud_text(col, cam, "beam_caption",
+        self.add_hud_text("beam", "beam_caption",
                           f"transverse scale ×{exag:.0f}", 0.085, 0.0, 0.655, 4.5)
-        self.add_z_readout(col, cam, "beam", 0.085, 0.0, 0.55, 4.5)
-        self.add_legend(col, cam, "beam", -1.62, 0.82, 4.5, 0.105)
+        self.add_z_readout("beam", "beam", 0.085, 0.0, 0.55, 4.5)
+        self.add_legend("beam", "beam", -1.62, 0.82, 4.5, 0.105)
 
         # Straight reference axis at the nominal beamline (x = y = 0), with a
         # ruler of real-world z positions; helical orbits sweep around it.
@@ -828,25 +855,66 @@ class Builder:
             self.beam_cols.append(col)
         return self.beam_cols[b]
 
-    def add_legend(self, col, cam, prefix, x, y, depth, size):
+    def add_legend(self, label, prefix, x, y, depth, size):
         """Color-coded beam labels, fixed to the top-left of the frame."""
         if self.n_beams < 2:
             return
         for b, beam in enumerate(self.beams):
-            self.add_hud_text(col, cam, f"{prefix}_legend{b}", beam["label"],
+            self.add_hud_text(label, f"{prefix}_legend{b}", beam["label"],
                               size, x, y - b * size * 1.6, depth,
-                              material=self.mats[f"legend{b}"], align_x="LEFT")
+                              material=self.mats[f"ov_legend{b}"], align_x="LEFT")
 
-    def add_hud_text(self, col, cam, name, body, size, x, y, depth,
+    def make_overlay(self, label, lens):
+        """A 2D overlay scene for one camera: flat text in front of an ortho
+        camera, alpha-composited over the render. No depth, no perspective,
+        no motion blur, no lighting."""
+        ov = bpy.data.scenes.new(f"OV_{label}")
+        ov.render.engine = "CYCLES"
+        ov.cycles.samples = 4
+        try:
+            ov.cycles.use_denoising = False
+        except AttributeError:
+            pass
+        ov.render.film_transparent = True
+        ov.render.use_motion_blur = False
+        try:
+            ov.cycles.device = bpy.context.scene.cycles.device
+        except AttributeError:
+            pass
+        ov.render.resolution_x = bpy.context.scene.render.resolution_x
+        ov.render.resolution_y = bpy.context.scene.render.resolution_y
+        ov.render.fps = self.args.fps
+        ov.frame_start, ov.frame_end = 1, self.total_frames
+        camd = bpy.data.cameras.new(f"OVCam_{label}")
+        camd.type = "ORTHO"
+        camd.ortho_scale = 2.0  # overlay coords: x in [-1, 1], y in [-a, a]
+        cam = bpy.data.objects.new(f"OVCam_{label}", camd)
+        cam.location = (0.0, 0.0, 5.0)
+        ov.collection.objects.link(cam)
+        ov.camera = cam
+        self.overlays[label] = {"scene": ov, "lens": lens}
+        return ov
+
+    def add_hud_text(self, label, name, body, size, x, y, depth,
                      material=None, align_x="CENTER"):
-        """Text parented to the camera at frame position (x, y) and distance
-        `depth`; it stays fixed in the frame regardless of camera motion."""
-        t = make_text(name, body, size, (x, y, -depth),
-                      material or self.mats["text"], parent=cam, align_x=align_x)
-        overlay_only(t)
-        return move_to_collection(t, col)
+        """Flat overlay text at the frame position where a 3D object at
+        camera-space (x, y, -depth) would appear (keeps historical layout
+        numbers), rendered as a 2D composite on top of the frame."""
+        ov = self.overlays[label]
+        half_w = depth * 18.0 / ov["lens"]
+        half_h = half_w * self.aspect
+        cu = bpy.data.curves.new(name, "FONT")
+        cu.body = body
+        cu.size = size / half_w
+        cu.align_x = align_x
+        cu.align_y = "CENTER"
+        cu.materials.append(material or self.mats["ov_text"])
+        obj = bpy.data.objects.new(name, cu)
+        obj.location = (x / half_w, y / half_h * self.aspect, 0.0)
+        ov["scene"].collection.objects.link(obj)
+        return obj
 
-    def add_z_readout(self, col, cam, prefix, size, x, y, depth, step=8):
+    def add_z_readout(self, label, prefix, size, x, y, depth, step=8):
         """Animated 'z = ... m' readout: a sequence of camera-locked texts
         with stepped visibility keyframes (text bodies are not animatable)."""
         f0 = 1 + self.fade_in_f
@@ -869,7 +937,7 @@ class Builder:
         segments.append((start, self.total_frames, current))
 
         for i, (fa, fb, body) in enumerate(segments):
-            t = self.add_hud_text(col, cam, f"{prefix}_zread{i:03d}", body,
+            t = self.add_hud_text(label, f"{prefix}_zread{i:03d}", body,
                                   size, x, y, depth)
             if len(segments) == 1:
                 continue
@@ -889,10 +957,11 @@ class Builder:
         legend, and the three 2D sub-projections of this view as small panels
         on the right (every beam overlaid in its own color)."""
         col = self.hud_collection(vid)
-        self.add_hud_text(col, cam, f"{vid}_title", VIEW_DEFS[vid]["title"],
+        self.make_overlay(vid, lens=40.0)
+        self.add_hud_text(vid, f"{vid}_title", VIEW_DEFS[vid]["title"],
                           0.105, 0.0, 0.62, 3.0)
-        self.add_z_readout(col, cam, vid, 0.075, 0.0, 0.52, 3.0)
-        self.add_legend(col, cam, vid, -1.28, 0.64, 3.0, 0.07)
+        self.add_z_readout(vid, vid, 0.075, 0.0, 0.52, 3.0)
+        self.add_legend(vid, vid, -1.28, 0.64, 3.0, 0.07)
         if not self.with_hud:
             return
 
@@ -937,7 +1006,7 @@ class Builder:
             back.parent = cam
             back.location = (px, ys[pi], -depth - 0.015)
             self.add_hud_text(
-                col, cam, f"{vid}_hud{pi}_cap", f"{short[ia]} – {short[ib]}",
+                vid, f"{vid}_hud{pi}_cap", f"{short[ia]} – {short[ib]}",
                 0.052, px, ys[pi] - half - 0.075, depth)
             for obj in panel_objs + [frame, back]:
                 overlay_only(obj)
@@ -1128,11 +1197,12 @@ class Builder:
                           mid + Vector((0, -dist, dist * 0.62)),
                           target=tgt, lens=38)
         self.cameras["overview"] = cam
-        col = self.hud_collection("overview")
-        self.add_hud_text(col, cam, "overview_title",
+        self.hud_collection("overview")
+        self.make_overlay("overview", lens=38.0)
+        self.add_hud_text("overview", "overview_title",
                           "Phase space — all projections", 0.105, 0.0, 0.66, 3.0)
-        self.add_z_readout(col, cam, "overview", 0.075, 0.0, 0.555, 3.0)
-        self.add_legend(col, cam, "overview", -1.3, 0.66, 3.0, 0.075)
+        self.add_z_readout("overview", "overview", 0.075, 0.0, 0.555, 3.0)
+        self.add_legend("overview", "overview", -1.3, 0.66, 3.0, 0.075)
 
         # Warm three-point studio rig (Kelvin temperatures, Blender >= 4.5).
         self.lights.append(make_area_light(
@@ -1178,11 +1248,15 @@ class Builder:
         print(f"[scene_builder] saved {out}")
 
     def set_active_hud(self, label):
-        """Show only the HUD overlay belonging to `label`'s camera."""
+        """Show only the HUD panels and text overlay of `label`'s camera."""
         for vid, col in self.hud_cols.items():
             hidden = vid != label
             col.hide_render = hidden
             col.hide_viewport = hidden
+        ov = self.overlays.get(label)
+        if ov is not None and self.comp_ov_rl is not None:
+            self.comp_ov_rl.scene = ov["scene"]
+            self.comp_ov_rl.layer = ov["scene"].view_layers[0].name
 
     def render(self):
         scene = bpy.context.scene
@@ -1190,6 +1264,9 @@ class Builder:
                   else [c for c in self.args.cameras.split(",") if c])
         rdir = os.path.abspath(self.args.render_dir)
         os.makedirs(rdir, exist_ok=True)
+        present = [w for w in wanted if w in self.cameras]
+        print(f"[scene_builder] render plan: {len(present)} camera(s) x "
+              f"{scene.frame_end - scene.frame_start + 1} frames", flush=True)
         for label in wanted:
             cam = self.cameras.get(label)
             if cam is None:
