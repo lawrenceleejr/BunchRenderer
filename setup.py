@@ -16,7 +16,8 @@ setup(
                  "animated, studio-lit Blender scenes."),
     python_requires=">=3.9",
     packages=["bunchrenderer"],
-    package_data={"bunchrenderer": ["blender/*.py", "docker/Dockerfile"]},
+    package_data={"bunchrenderer": ["blender/*.py", "docker/Dockerfile",
+                                    "fonts/*.ttf", "fonts/*.txt"]},
     include_package_data=True,
     entry_points={"console_scripts": ["bunchrender=bunchrenderer.cli:main"]},
 )

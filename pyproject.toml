@@ -26,4 +26,4 @@ bunchrender = "bunchrenderer.cli:main"
 packages = ["bunchrenderer"]
 
 [tool.setuptools.package-data]
-bunchrenderer = ["blender/*.py", "docker/Dockerfile"]
+bunchrenderer = ["blender/*.py", "docker/Dockerfile", "fonts/*.ttf", "fonts/*.txt"]

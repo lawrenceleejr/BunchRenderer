@@ -37,7 +37,8 @@ ENTRY_POINTS = """\
 bunchrender = bunchrenderer.cli:main
 """
 
-PACKAGE_FILES = ("*.py", "blender/*.py", "docker/Dockerfile")
+PACKAGE_FILES = ("*.py", "blender/*.py", "docker/Dockerfile",
+                 "fonts/*.ttf", "fonts/*.txt")
 
 
 def _package_files():

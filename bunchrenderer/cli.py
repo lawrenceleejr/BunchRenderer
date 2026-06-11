@@ -475,6 +475,8 @@ def main(argv=None):
         (staging / "data.json").write_text(json.dumps(bundle))
         shutil.copy(_pkg_path("blender", "scene_builder.py"),
                     staging / "scene_builder.py")
+        if _pkg_path("fonts").is_dir():
+            shutil.copytree(_pkg_path("fonts"), staging / "fonts")
         if args.render:
             render_dir.mkdir(parents=True, exist_ok=True)
             print(f"[bunchrender] renders will appear in {render_dir} as they "

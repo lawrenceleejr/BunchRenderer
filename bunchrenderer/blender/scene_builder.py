@@ -83,6 +83,37 @@ def parse_args():
 # --------------------------------------------------------------------------
 # Small helpers (data-API only; no operators that need UI context)
 
+# Bundled typeface (Tektur, OFL) loaded by load_fonts(); falls back to
+# Blender's built-in font when the files aren't found.
+FONTS = {"regular": None, "bold": None}
+
+
+def load_fonts():
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+    for key, fname in (("regular", "Tektur-Regular.ttf"),
+                       ("bold", "Tektur-Medium.ttf")):
+        path = os.path.join(base, fname)
+        if not os.path.exists(path):
+            continue
+        try:
+            font = bpy.data.fonts.load(path)
+            try:
+                font.pack()  # embed in the .blend so the file is portable
+            except Exception:
+                pass
+            FONTS[key] = font
+        except Exception as exc:
+            print(f"[scene_builder] could not load font {fname}: {exc}")
+    if FONTS["regular"] is None:
+        print("[scene_builder] bundled fonts not found; using Blender's default")
+
+
+def apply_font(curve, bold=False):
+    font = FONTS["bold" if bold else "regular"] or FONTS["regular"]
+    if font is not None:
+        curve.font = font
+
+
 def link(obj):
     bpy.context.scene.collection.objects.link(obj)
     return obj
@@ -221,13 +252,14 @@ def make_view_objects(name, coords, sample_frames, center, radius,
 
 
 def make_text(name, body, size, location, material, target=None,
-              align_x="CENTER", extrude=0.0, parent=None):
+              align_x="CENTER", extrude=0.0, parent=None, bold=False):
     cu = bpy.data.curves.new(name, "FONT")
     cu.body = body
     cu.size = size
     cu.align_x = align_x
     cu.align_y = "CENTER"
     cu.extrude = extrude
+    apply_font(cu, bold)
     cu.materials.append(material)
     obj = bpy.data.objects.new(name, cu)
     if parent is not None:
@@ -806,7 +838,7 @@ class Builder:
         self.hud_collection("beam")
         self.make_overlay("beam", lens=46.0)
         self.add_hud_text("beam", "beam_title", "Real space — beam frame",
-                          0.15, 0.0, 0.80, 4.5)
+                          0.15, 0.0, 0.80, 4.5, bold=True)
         self.add_hud_text("beam", "beam_caption",
                           f"transverse scale ×{exag:.0f}", 0.085, 0.0, 0.655, 4.5)
         self.add_z_readout("beam", "beam", 0.085, 0.0, 0.55, 4.5)
@@ -896,7 +928,7 @@ class Builder:
         return ov
 
     def add_hud_text(self, label, name, body, size, x, y, depth,
-                     material=None, align_x="CENTER"):
+                     material=None, align_x="CENTER", bold=False):
         """Flat overlay text at the frame position where a 3D object at
         camera-space (x, y, -depth) would appear (keeps historical layout
         numbers), rendered as a 2D composite on top of the frame."""
@@ -908,6 +940,7 @@ class Builder:
         cu.size = size / half_w
         cu.align_x = align_x
         cu.align_y = "CENTER"
+        apply_font(cu, bold)
         cu.materials.append(material or self.mats["ov_text"])
         obj = bpy.data.objects.new(name, cu)
         obj.location = (x / half_w, y / half_h * self.aspect, 0.0)
@@ -959,7 +992,7 @@ class Builder:
         col = self.hud_collection(vid)
         self.make_overlay(vid, lens=40.0)
         self.add_hud_text(vid, f"{vid}_title", VIEW_DEFS[vid]["title"],
-                          0.105, 0.0, 0.62, 3.0)
+                          0.105, 0.0, 0.62, 3.0, bold=True)
         self.add_z_readout(vid, vid, 0.075, 0.0, 0.52, 3.0)
         self.add_legend(vid, vid, -1.28, 0.64, 3.0, 0.07)
         if not self.with_hud:
@@ -1200,7 +1233,8 @@ class Builder:
         self.hud_collection("overview")
         self.make_overlay("overview", lens=38.0)
         self.add_hud_text("overview", "overview_title",
-                          "Phase space — all projections", 0.105, 0.0, 0.66, 3.0)
+                          "Phase space — all projections", 0.105, 0.0, 0.66, 3.0,
+                          bold=True)
         self.add_z_readout("overview", "overview", 0.075, 0.0, 0.555, 3.0)
         self.add_legend("overview", "overview", -1.3, 0.66, 3.0, 0.075)
 
@@ -1296,6 +1330,7 @@ class Builder:
         print(f"[scene_builder] renders written to {rdir}")
 
     def run(self):
+        load_fonts()
         self.setup_scene()
         self.setup_materials()
         if "beam" in self.views:
