@@ -25,7 +25,7 @@ import sys
 
 import bpy
 import bmesh
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 FLOOR_Z = -2.6           # world height of the studio floor
 STATION_HALF = 1.5       # data is normalized into a cube of this half-extent
@@ -58,6 +58,10 @@ def parse_args():
     p.add_argument("--views", default="all")
     p.add_argument("--cameras", default="all")
     p.add_argument("--no-hull", action="store_true")
+    p.add_argument("--no-hud", action="store_true")
+    p.add_argument("--fade-in", type=float, default=0.75)
+    p.add_argument("--hold", type=float, default=0.5)
+    p.add_argument("--fade-out", type=float, default=1.5)
     p.add_argument("--render", action="store_true")
     p.add_argument("--render-dir", default="renders")
     p.add_argument("--format", choices=("mp4", "png"), default="mp4")
@@ -332,6 +336,38 @@ def make_plane(name, location, size, material):
     return link(obj)
 
 
+def move_to_collection(obj, col):
+    for c in list(obj.users_collection):
+        c.objects.unlink(obj)
+    col.objects.link(obj)
+    return obj
+
+
+def overlay_only(obj):
+    """Camera overlay objects: visible to the camera, invisible to shadows
+    and secondary rays so they never affect the scene's lighting."""
+    for prop in ("visible_shadow", "visible_diffuse", "visible_glossy",
+                 "visible_transmission", "visible_volume_scatter"):
+        if hasattr(obj, prop):
+            setattr(obj, prop, False)
+    return obj
+
+
+def make_frame_rect(name, half_w, half_h, thickness, material):
+    """Thin rectangular border (curve with bevel) for HUD panels."""
+    cu = bpy.data.curves.new(name, "CURVE")
+    cu.dimensions = "3D"
+    cu.bevel_depth = thickness
+    cu.materials.append(material)
+    sp = cu.splines.new("POLY")
+    sp.points.add(3)
+    for pt, (x, y) in zip(sp.points, ((-half_w, -half_h), (half_w, -half_h),
+                                      (half_w, half_h), (-half_w, half_h))):
+        pt.co = (x, y, 0.0, 1.0)
+    sp.use_cyclic_u = True
+    return bpy.data.objects.new(name, cu)
+
+
 def fmt(v):
     return f"{v:+.3g}" if abs(v) >= 1e-12 else "0"
 
@@ -399,12 +435,27 @@ class Builder:
             self.data = json.load(fh)
         self.S = self.data["meta"]["n_samples"]
         self.N = self.data["meta"]["n_particles"]
-        f0, f1 = 1, args.frames
-        self.sample_frames = [f0 + (f1 - f0) * s / (self.S - 1)
+
+        # Timeline: lights ramp on, the beam evolves, the final state holds
+        # (cameras keep orbiting), then the lights fade to black.
+        self.fade_in_f = max(0, int(round(args.fade_in * args.fps)))
+        self.hold_f = max(0, int(round(args.hold * args.fps)))
+        self.fade_out_f = max(0, int(round(args.fade_out * args.fps)))
+        self.evo_frames = args.frames
+        self.total_frames = (self.fade_in_f + self.evo_frames
+                             + self.hold_f + self.fade_out_f)
+        f0 = 1 + self.fade_in_f
+        self.sample_frames = [f0 + (self.evo_frames - 1) * s / (self.S - 1)
                               for s in range(self.S)]
+        # Bunch centroid z [mm] per sample, for the HUD z-readouts.
+        self.cz = [sum(p[2] for p in row) / self.N for row in self.data["pos"]]
+
         self.cameras = {}
         self.mats = {}
+        self.lights = []
+        self.hud_cols = {}
         self.with_hull = not args.no_hull
+        self.with_hud = not args.no_hud
         if args.views == "all":
             self.views = ["beam"] + VIEW_ORDER
         else:
@@ -426,7 +477,7 @@ class Builder:
         scene.render.motion_blur_shutter = 0.55
         scene.render.fps = self.args.fps
         scene.frame_start = 1
-        scene.frame_end = self.args.frames
+        scene.frame_end = self.total_frames
         w, _, h = self.args.resolution.lower().partition("x")
         scene.render.resolution_x = int(w or 1920)
         scene.render.resolution_y = int(h or 1080)
@@ -490,6 +541,38 @@ class Builder:
         self.mats["guide"] = make_material(
             "BR_Guide", (0.4, 0.7, 1.0), emission=(0.4, 0.7, 1.0),
             emission_strength=0.6)
+        # Camera-locked HUD overlays (self-emissive: unaffected by light fades).
+        self.mats["hud_particle"] = make_material(
+            "BR_HudParticle", PALETTE["phase_particle"],
+            emission=PALETTE["phase_particle"], emission_strength=5.0)
+        self.mats["hud_hull"] = make_material(
+            "BR_HudHull", (0.45, 0.75, 0.95), alpha=0.22,
+            emission=(0.45, 0.75, 0.95), emission_strength=0.5)
+        self.mats["hud_frame"] = make_material(
+            "BR_HudFrame", (0.3, 0.7, 0.9), emission=(0.3, 0.7, 0.9),
+            emission_strength=1.4)
+        self.mats["hud_backdrop"] = make_material(
+            "BR_HudBackdrop", (0.005, 0.006, 0.01), roughness=1.0, alpha=0.6)
+        # Tron-style beamline elements: ghostly solid + brighter wireframe.
+        self.mats["elem_wire"] = make_material(
+            "BR_ElemWire", (0.25, 0.8, 1.0), emission=(0.25, 0.8, 1.0),
+            emission_strength=1.4, alpha=0.4)
+        self.mats["elem_label"] = make_material(
+            "BR_ElemLabel", (0.55, 0.85, 1.0), emission=(0.55, 0.85, 1.0),
+            emission_strength=1.0)
+        self._elem_solid_cache = {}
+
+    def elem_solid_material(self, color):
+        """Translucent ghost material for beamline elements, tinted by the
+        color the geometry carries (e.g. from the g4bl VRML export)."""
+        key = tuple(round(c, 3) for c in color)
+        mat = self._elem_solid_cache.get(key)
+        if mat is None:
+            mat = make_material(f"BR_ElemSolid_{len(self._elem_solid_cache)}",
+                                key, roughness=0.4, alpha=0.045,
+                                emission=key, emission_strength=0.15)
+            self._elem_solid_cache[key] = mat
+        return mat
 
     # -- beam (real space) view ---------------------------------------------
 
@@ -535,7 +618,8 @@ class Builder:
 
         cam = make_camera("Cam_beam", (0, 0, 0), target=target, lens=46)
         cam.parent = target
-        cam.location = (-4.6, -7.5, 2.7)
+        # Offset chosen to stay outside typical beam-pipe ghost geometry.
+        cam.location = (-5.4, -8.2, 3.2)
         cam.data.dof.use_dof = True
         cam.data.dof.focus_object = target
         cam.data.dof.aperture_fstop = 4.0
@@ -565,10 +649,14 @@ class Builder:
                   txmat, target=cam, parent=target)
         make_text("beam_lbl_zdir", "z", 0.3, tripod + Vector((0, 1.85, 0)),
                   txmat, target=cam, parent=target)
-        make_text("beam_title", "Real space — beam frame", 0.34,
-                  Vector((2.6, 0.5, 1.5)), txmat, target=cam, parent=target)
-        make_text("beam_caption", f"transverse scale ×{exag:.0f}", 0.2,
-                  Vector((2.6, 0.5, 1.05)), txmat, target=cam, parent=target)
+
+        # Title block as a camera-locked overlay (fixed in frame).
+        col = self.hud_collection("beam")
+        self.add_hud_text(col, cam, "beam_title", "Real space — beam frame",
+                          0.15, 0.0, 0.80, 4.5)
+        self.add_hud_text(col, cam, "beam_caption",
+                          f"transverse scale ×{exag:.0f}", 0.085, 0.0, 0.655, 4.5)
+        self.add_z_readout(col, cam, "beam", 0.085, 0.0, 0.55, 4.5)
 
         # Static ruler along the corridor with real-world z positions.
         origin = Vector(centroids[0])
@@ -586,10 +674,209 @@ class Builder:
         # slightly cooler (but still warm) rim from the side.
         for k, yfrac in enumerate((0.15, 0.5, 0.85)):
             loc = (2.5, BEAM_LENGTH * yfrac, BEAM_HEIGHT + 8.0)
-            make_area_light(f"BeamKey_{k}", loc, target, size=9.0, power=3000,
-                            temperature=3100.0)
-        make_area_light("BeamRim", (-6.0, BEAM_LENGTH * 0.7, BEAM_HEIGHT + 1.5),
-                        target, size=12.0, power=1500, temperature=3900.0)
+            self.lights.append(make_area_light(
+                f"BeamKey_{k}", loc, target, size=9.0, power=3000,
+                temperature=3100.0))
+        self.lights.append(make_area_light(
+            "BeamRim", (-6.0, BEAM_LENGTH * 0.7, BEAM_HEIGHT + 1.5),
+            target, size=12.0, power=1500, temperature=3900.0))
+
+        self.build_elements(to_world, s_trans, s_long, cam)
+
+    # -- camera-locked HUD overlays -------------------------------------------
+
+    def hud_collection(self, label):
+        col = bpy.data.collections.new(f"HUD_{label}")
+        bpy.context.scene.collection.children.link(col)
+        self.hud_cols[label] = col
+        return col
+
+    def add_hud_text(self, col, cam, name, body, size, x, y, depth,
+                     material=None, align_x="CENTER"):
+        """Text parented to the camera at frame position (x, y) and distance
+        `depth`; it stays fixed in the frame regardless of camera motion."""
+        t = make_text(name, body, size, (x, y, -depth),
+                      material or self.mats["text"], parent=cam, align_x=align_x)
+        overlay_only(t)
+        return move_to_collection(t, col)
+
+    def add_z_readout(self, col, cam, prefix, size, x, y, depth, step=8):
+        """Animated 'z = ... m' readout: a sequence of camera-locked texts
+        with stepped visibility keyframes (text bodies are not animatable)."""
+        f0 = 1 + self.fade_in_f
+
+        def z_at(frame):
+            if self.evo_frames <= 1 or self.S <= 1:
+                s = 0
+            else:
+                t = (frame - f0) * (self.S - 1) / (self.evo_frames - 1)
+                s = min(max(int(round(t)), 0), self.S - 1)
+            return self.cz[s] / 1000.0  # meters
+
+        segments, start = [], 1
+        current = f"z = {z_at(1):.2f} m"
+        for f in range(1 + step, self.total_frames + 1, step):
+            txt = f"z = {z_at(f):.2f} m"
+            if txt != current:
+                segments.append((start, f - 1, current))
+                start, current = f, txt
+        segments.append((start, self.total_frames, current))
+
+        for i, (fa, fb, body) in enumerate(segments):
+            t = self.add_hud_text(col, cam, f"{prefix}_zread{i:03d}", body,
+                                  size, x, y, depth)
+            if len(segments) == 1:
+                continue
+            for prop in ("hide_render", "hide_viewport"):
+                if fa > 1:
+                    setattr(t, prop, True)
+                    t.keyframe_insert(prop, frame=1)
+                setattr(t, prop, False)
+                t.keyframe_insert(prop, frame=fa)
+                if fb < self.total_frames:
+                    setattr(t, prop, True)
+                    t.keyframe_insert(prop, frame=fb + 1)
+            for fc in t.animation_data.action.fcurves:
+                for kp in fc.keyframe_points:
+                    kp.interpolation = "CONSTANT"
+
+    def build_station_hud(self, vid, cam, axes, coords):
+        """Heads-up display for a 3D station camera: title, z-readout, and the
+        three 2D sub-projections of this view as small panels on the right."""
+        col = self.hud_collection(vid)
+        self.add_hud_text(col, cam, f"{vid}_title", VIEW_DEFS[vid]["title"],
+                          0.105, 0.0, 0.62, 3.0)
+        self.add_z_readout(col, cam, vid, 0.075, 0.0, 0.52, 3.0)
+        if not self.with_hud:
+            return
+
+        depth, px, half = 3.0, 1.02, 0.17
+        ys = (0.50, 0.02, -0.46)
+        short = [label.split(" [")[0] for _, label in axes]
+        for pi, (a, b) in enumerate(((0, 1), (0, 2), (1, 2))):
+            pos = (px, ys[pi], -depth)
+            scale = half * 0.95 / STATION_HALF
+            pcoords = [[(v[a] * scale, v[b] * scale, 0.0) for v in row]
+                       for row in coords]
+            cloud = make_cloud(f"{vid}_hud{pi}", pcoords, self.sample_frames)
+            cloud.parent = cam
+            cloud.location = pos
+            mod = cloud.modifiers.new("Points", "NODES")
+            mod.node_group = points_node_group(
+                f"{vid}_hud{pi}_pts", 0.0065, self.mats["hud_particle"])
+            hull = bpy.data.objects.new(f"{vid}_hud{pi}_hull", cloud.data)
+            link(hull)
+            hull.parent = cam
+            hull.location = pos
+            hmod = hull.modifiers.new("Hull", "NODES")
+            hmod.node_group = hull_node_group(
+                f"{vid}_hud{pi}_hullgn", self.mats["hud_hull"])
+            try:
+                hull.cycles.use_deform_motion = False
+            except AttributeError:
+                pass
+            frame = make_frame_rect(f"{vid}_hud{pi}_frame", half + 0.045,
+                                    half + 0.045, 0.0035, self.mats["hud_frame"])
+            link(frame)
+            frame.parent = cam
+            frame.location = pos
+            back = make_plane(f"{vid}_hud{pi}_back", (0, 0, 0),
+                              2 * (half + 0.045), self.mats["hud_backdrop"])
+            back.parent = cam
+            back.location = (px, ys[pi], -depth - 0.015)
+            caption = self.add_hud_text(
+                col, cam, f"{vid}_hud{pi}_cap", f"{short[a]} – {short[b]}",
+                0.052, px, ys[pi] - half - 0.075, depth)
+            for obj in (cloud, hull, frame, back):
+                overlay_only(obj)
+                move_to_collection(obj, col)
+
+    # -- beamline elements (real-space view decoration) -----------------------
+
+    def build_elements(self, to_world, s_trans, s_long, cam):
+        els = self.data.get("elements")
+        if not els:
+            return
+        if els.get("type") == "vrml":
+            self._build_vrml_elements(els["meshes"], to_world)
+        else:
+            self._build_csv_elements(els["items"], to_world, s_trans, s_long, cam)
+
+    def _ghost_pair(self, name, mesh, color):
+        """Solid translucent object + brighter wireframe overlay (tron look)."""
+        solid = bpy.data.objects.new(name, mesh)
+        mesh.materials.append(self.elem_solid_material(color))
+        link(solid)
+        wire_mesh = mesh.copy()
+        wire_mesh.materials.clear()
+        wire_mesh.materials.append(self.mats["elem_wire"])
+        wire = bpy.data.objects.new(f"{name}_wire", wire_mesh)
+        link(wire)
+        mod = wire.modifiers.new("Wireframe", "WIREFRAME")
+        mod.thickness = 0.012
+        mod.use_replace = True
+        for obj in (solid, wire):
+            overlay_only(obj)  # don't let ghosts cast shadows on the beam
+        return solid, wire
+
+    def _build_vrml_elements(self, meshes, to_world):
+        seen_names = set()
+        for k, m in enumerate(meshes):
+            verts = [to_world(v) for v in m["verts"]]
+            name = m.get("name") or f"element_{k}"
+            if m["faces"]:
+                mesh = bpy.data.meshes.new(f"elem_{k}_{name}")
+                mesh.from_pydata(verts, [], [tuple(f) for f in m["faces"]])
+                mesh.validate()
+                self._ghost_pair(f"elem_{k}_{name}", mesh,
+                                 m.get("color") or (0.3, 0.6, 0.9))
+            for poly in m["lines"]:
+                cu = bpy.data.curves.new(f"elem_{k}_{name}_lines", "CURVE")
+                cu.dimensions = "3D"
+                cu.bevel_depth = 0.012
+                cu.materials.append(self.mats["elem_wire"])
+                sp = cu.splines.new("POLY")
+                sp.points.add(len(poly) - 1)
+                for pt, vi in zip(sp.points, poly):
+                    pt.co = (*verts[vi], 1.0)
+                overlay_only(link(bpy.data.objects.new(
+                    f"elem_{k}_{name}_lines", cu)))
+            if m.get("name") and m["name"] not in seen_names:
+                seen_names.add(m["name"])
+
+    def _build_csv_elements(self, items, to_world, s_trans, s_long, cam):
+        for k, el in enumerate(items):
+            center = Vector(to_world((el["x"], el["y"], el["z"])))
+            length_b = max(el["length"] * s_long, 0.02)
+            bm = bmesh.new()
+            if el["shape"] == "box":
+                res = bmesh.ops.create_cube(bm, size=1.0)
+                bmesh.ops.scale(bm, verts=res["verts"],
+                                vec=(2 * el["rout"] * s_trans, length_b,
+                                     2 * el["height"] * s_trans))
+            else:
+                radii = [el["rout"]]
+                if el["shape"] == "tube" and el["rin"] > 0:
+                    radii.append(el["rin"])
+                for r in radii:
+                    res = bmesh.ops.create_cone(
+                        bm, cap_ends=False, segments=40,
+                        radius1=r * s_trans, radius2=r * s_trans, depth=length_b)
+                    bmesh.ops.rotate(
+                        bm, verts=res["verts"], cent=(0, 0, 0),
+                        matrix=Matrix.Rotation(math.radians(90.0), 3, "X"))
+            mesh = bpy.data.meshes.new(f"elem_{k}_{el['name']}")
+            bm.to_mesh(mesh)
+            bm.free()
+            solid, wire = self._ghost_pair(f"elem_{k}_{el['name']}", mesh,
+                                           (0.20, 0.45, 0.85))
+            for obj in (solid, wire):
+                obj.location = center
+            top = el["rout"] * s_trans if el["shape"] != "box" \
+                else el["height"] * s_trans
+            make_text(f"elem_{k}_label", el["name"], 0.28,
+                      center + Vector((0, 0, top + 0.45)),
+                      self.mats["elem_label"], target=cam)
 
     # -- phase-space stations ------------------------------------------------
 
@@ -620,13 +907,14 @@ class Builder:
 
         axmat, txmat = self.mats["axis"], self.mats["text"]
         tgt = make_empty(f"{vid}_target", center)
-        # The camera hangs off a pivot that slowly orbits the station, so the
-        # 3D shape of the evolving hull reads clearly in the animation.
+        # The camera hangs off a pivot that slowly orbits the station -- through
+        # the fades and the end hold too -- so the 3D shape of the evolving
+        # hull reads clearly in the animation.
         pivot = make_empty(f"{vid}_campivot", center)
         pivot.rotation_euler = (0.0, 0.0, math.radians(-11.0))
         pivot.keyframe_insert("rotation_euler", frame=1)
-        pivot.rotation_euler = (0.0, 0.0, math.radians(14.0))
-        pivot.keyframe_insert("rotation_euler", frame=self.args.frames)
+        pivot.rotation_euler = (0.0, 0.0, math.radians(16.0))
+        pivot.keyframe_insert("rotation_euler", frame=self.total_frames)
         for fc in pivot.animation_data.action.fcurves:
             for kp in fc.keyframe_points:
                 kp.interpolation = "LINEAR"
@@ -649,13 +937,14 @@ class Builder:
         # The depth-axis label is lifted above the hull and pushed left so
         # the camera can always see it.
         make_text(f"{vid}_lbl1", range_label(1), 0.21,
-                  corner + Vector((-1.95, 2 * ext + 0.6, 2 * ext - 0.95)),
+                  corner + Vector((-2.45, 2 * ext + 0.6, 2 * ext - 0.95)),
                   txmat, target=cam)
         make_text(f"{vid}_lbl2", range_label(2), 0.21,
                   corner + Vector((-0.8, 0, ext)), txmat, target=cam)
 
-        make_text(f"{vid}_title", vdef["title"], 0.28,
-                  center + Vector((0, 0, ext + 0.95)), txmat, target=cam)
+        # Title + z-readout + 2D sub-projection panels live on the camera as a
+        # heads-up display, fixed in frame while the camera orbits.
+        self.build_station_hud(vid, cam, axes, coords)
         make_cylinder(f"{vid}_pedestal", center + Vector((0, 0, FLOOR_Z + 0.2)),
                       radius=3.1, depth=0.4, material=self.mats["pedestal"])
         return center
@@ -679,14 +968,42 @@ class Builder:
                           mid + Vector((0, -dist, dist * 0.62)),
                           target=tgt, lens=38)
         self.cameras["overview"] = cam
+        col = self.hud_collection("overview")
+        self.add_hud_text(col, cam, "overview_title",
+                          "Phase space — all projections", 0.105, 0.0, 0.66, 3.0)
+        self.add_z_readout(col, cam, "overview", 0.075, 0.0, 0.555, 3.0)
 
         # Warm three-point studio rig (Kelvin temperatures, Blender >= 4.5).
-        make_area_light("StationsKey", mid + Vector((4, -6, 14)), tgt,
-                        size=extent + 14, power=22000, temperature=3100.0)
-        make_area_light("StationsFill", mid + Vector((-extent, -10, 7)), tgt,
-                        size=14, power=6000, temperature=3700.0)
-        make_area_light("StationsRim", mid + Vector((0, extent * 0.8 + 8, 5)), tgt,
-                        size=18, power=8000, temperature=4200.0)
+        self.lights.append(make_area_light(
+            "StationsKey", mid + Vector((4, -6, 14)), tgt,
+            size=extent + 14, power=22000, temperature=3100.0))
+        self.lights.append(make_area_light(
+            "StationsFill", mid + Vector((-extent, -10, 7)), tgt,
+            size=14, power=6000, temperature=3700.0))
+        self.lights.append(make_area_light(
+            "StationsRim", mid + Vector((0, extent * 0.8 + 8, 5)), tgt,
+            size=18, power=8000, temperature=4200.0))
+
+    def setup_light_fades(self):
+        """Lights ramp on over the intro, hold, then fade to black at the end
+        (emissive materials -- particles, text, wireframes -- keep glowing)."""
+        if not self.lights:
+            return
+        f_on = 1 + self.fade_in_f
+        f_off = self.total_frames - self.fade_out_f
+        for obj in self.lights:
+            ld = obj.data
+            full = ld.energy
+            if self.fade_in_f > 0:
+                ld.energy = 0.0
+                ld.keyframe_insert("energy", frame=1)
+                ld.energy = full
+                ld.keyframe_insert("energy", frame=f_on)
+            if self.fade_out_f > 0:
+                ld.energy = full
+                ld.keyframe_insert("energy", frame=f_off)
+                ld.energy = 0.0
+                ld.keyframe_insert("energy", frame=self.total_frames)
 
     def build_floor(self):
         make_plane("Floor", (0, -14, FLOOR_Z), 320, self.mats["floor"])
@@ -698,6 +1015,13 @@ class Builder:
         os.makedirs(os.path.dirname(out), exist_ok=True)
         bpy.ops.wm.save_as_mainfile(filepath=out, compress=True)
         print(f"[scene_builder] saved {out}")
+
+    def set_active_hud(self, label):
+        """Show only the HUD overlay belonging to `label`'s camera."""
+        for vid, col in self.hud_cols.items():
+            hidden = vid != label
+            col.hide_render = hidden
+            col.hide_viewport = hidden
 
     def render(self):
         scene = bpy.context.scene
@@ -711,6 +1035,7 @@ class Builder:
                 print(f"[scene_builder] no camera '{label}' in this scene; skipped")
                 continue
             scene.camera = cam
+            self.set_active_hud(label)
             if self.args.format == "mp4":
                 scene.render.image_settings.file_format = "FFMPEG"
                 scene.render.ffmpeg.format = "MPEG4"
@@ -733,11 +1058,15 @@ class Builder:
             self.build_beam_view()
         self.build_stations()
         self.build_floor()
+        self.setup_light_fades()
         scene = bpy.context.scene
-        scene.camera = self.cameras.get("beam") or next(iter(self.cameras.values()), None)
+        default = "beam" if "beam" in self.cameras else next(iter(self.cameras), None)
+        scene.camera = self.cameras.get(default)
+        self.set_active_hud(default)
         self.save()
         if self.args.render:
             self.render()
+            self.set_active_hud(default)
 
 
 def main():

@@ -1,0 +1,8 @@
+# Example beamline layout matching examples/gaussian_beam.txt (3 m channel).
+# Columns (mm): see README -- shape: tube|cylinder|box.
+name,shape,z,length,rin,rout,height
+Solenoid 1,tube,450,500,40,60,
+Solenoid 2,tube,1150,500,40,60,
+Solenoid 3,tube,1850,500,40,60,
+Solenoid 4,tube,2550,500,40,60,
+Collimator,box,100,80,0,70,70

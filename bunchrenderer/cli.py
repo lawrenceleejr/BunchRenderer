@@ -15,7 +15,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import __version__, tracks as tracklib
+from . import __version__, elements as elementslib, tracks as tracklib
 
 BLENDER_VERSION = "4.5.10"
 DEFAULT_IMAGE = f"bunchrenderer/blender:{BLENDER_VERSION}"
@@ -69,10 +69,31 @@ def build_parser():
     sc.add_argument("--views", default="all",
                     help="comma-separated views to build: "
                          + ",".join(VIEW_IDS) + " or 'all'")
+    sc.add_argument("--elements", default=None, metavar="FILE",
+                    help="beamline geometry superimposed on the real-space view: "
+                         "a VRML 1.0 .wrl exported by g4beamline (viewer=VRML1FILE) "
+                         "or a simple CSV (see README)")
+    sc.add_argument("--elements-max-radius", type=float, default=1000.0, metavar="MM",
+                    help="skip geometry shapes larger than this transverse "
+                         "half-extent (filters out world/enclosure volumes)")
     sc.add_argument("--no-hull", action="store_true",
                     help="skip the convex-hull envelope surfaces")
-    sc.add_argument("--frames", type=int, default=240, help="animation length in frames")
+    sc.add_argument("--no-hud", action="store_true",
+                    help="skip the 2D sub-projection HUD panels on the "
+                         "phase-space station cameras")
+    sc.add_argument("--frames", type=int, default=240,
+                    help="length of the beam-evolution part of the animation, "
+                         "in frames (fades and hold are added on top)")
     sc.add_argument("--fps", type=int, default=24, help="frames per second")
+    sc.add_argument("--fade-in", type=float, default=0.75, metavar="SEC",
+                    help="lights-on ramp before the beam evolution starts "
+                         "(0 disables)")
+    sc.add_argument("--hold", type=float, default=0.5, metavar="SEC",
+                    help="hold on the final beam state (cameras keep orbiting) "
+                         "before the fade-out")
+    sc.add_argument("--fade-out", type=float, default=1.5, metavar="SEC",
+                    help="lights-off ramp at the end of the animation "
+                         "(0 disables)")
     sc.add_argument("--samples", type=int, default=64, help="Cycles render samples")
     sc.add_argument("--resolution", default="1920x1080", metavar="WxH",
                     help="render resolution")
@@ -102,14 +123,53 @@ def _validate_csv_list(value, allowed, flag):
 def _builder_args(args, data_path, blend_path, render_dir):
     out = ["--data", str(data_path), "--output", str(blend_path),
            "--frames", str(args.frames), "--fps", str(args.fps),
+           "--fade-in", str(args.fade_in), "--hold", str(args.hold),
+           "--fade-out", str(args.fade_out),
            "--samples", str(args.samples), "--resolution", args.resolution,
            "--views", args.views, "--cameras", args.cameras,
            "--format", args.format, "--render-dir", str(render_dir)]
     if args.no_hull:
         out.append("--no-hull")
+    if args.no_hud:
+        out.append("--no-hud")
     if args.render:
         out.append("--render")
     return out
+
+
+def _mesh_transverse_half_extent(mesh):
+    xs = [v[0] for v in mesh["verts"]]
+    ys = [v[1] for v in mesh["verts"]]
+    return max(max(xs) - min(xs), max(ys) - min(ys), 0.0) / 2.0
+
+
+def _load_elements(args):
+    """Load and filter the beamline geometry, if requested."""
+    if not args.elements:
+        return None
+    bundle = elementslib.load_elements(args.elements)
+    rmax = args.elements_max_radius
+    if bundle["type"] == "vrml":
+        kept = [m for m in bundle["meshes"]
+                if _mesh_transverse_half_extent(m) <= rmax]
+        dropped = len(bundle["meshes"]) - len(kept)
+        if dropped:
+            print(f"[bunchrender] elements: dropped {dropped} shape(s) wider "
+                  f"than {rmax:.0f} mm (see --elements-max-radius)")
+        if not kept:
+            raise elementslib.ElementsError(
+                "all geometry shapes were filtered out; raise --elements-max-radius")
+        bundle["meshes"] = kept
+        print(f"[bunchrender] elements: {len(kept)} shape(s) from VRML")
+    else:
+        kept = [e for e in bundle["items"] if e["rout"] <= rmax]
+        dropped = len(bundle["items"]) - len(kept)
+        if dropped:
+            print(f"[bunchrender] elements: dropped {dropped} element(s) wider "
+                  f"than {rmax:.0f} mm (see --elements-max-radius)")
+        bundle["items"] = kept
+        print(f"[bunchrender] elements: {len(kept)} element(s) from CSV")
+    return bundle
 
 
 def _image_exists(image):
@@ -178,7 +238,10 @@ def main(argv=None):
         tracks = tracklib.load_tracks(in_path, drift_length=args.drift_length)
         bundle = tracklib.resample(tracks, n_samples=args.time_samples,
                                    max_particles=args.max_particles)
-    except tracklib.TrackError as exc:
+        elements = _load_elements(args)
+        if elements is not None:
+            bundle["elements"] = elements
+    except (tracklib.TrackError, elementslib.ElementsError) as exc:
         raise SystemExit(f"error: {exc}")
 
     meta = bundle["meta"]
