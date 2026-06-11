@@ -40,34 +40,32 @@ a subtle glow pass.
 git clone https://github.com/lawrenceleejr/BunchRenderer
 cd BunchRenderer
 
-# headlessly render every view of your track file to MP4s:
-./bin/bunchrender /path/to/tracks.txt --render \
+# headlessly render every view of your track file to MP4s, on the GPU:
+./bin/bunchrender /path/to/tracks.txt --render --gpu \
     --blender /Applications/Blender.app/Contents/MacOS/Blender
 
 # with the beamline geometry superimposed on the real-space view:
-./bin/bunchrender /path/to/tracks.txt --render --elements g4_00.wrl \
+./bin/bunchrender /path/to/tracks.txt --render --gpu --elements g4_00.wrl \
     --blender /Applications/Blender.app/Contents/MacOS/Blender
 ```
+
+`--gpu` renders with Metal on Apple Silicon (CUDA/OptiX/HIP/oneAPI elsewhere)
+and is much faster than the CPU default; it falls back to CPU with a warning
+if no GPU device is found.
 
 `--blender PATH` implies local (non-Docker) mode; `python3 -m bunchrenderer …`
 is equivalent to `./bin/bunchrender …`. Movies land in `<output>_renders/`,
 one MP4 per camera, alongside the `.blend`.
 
-### If `pip install .` fails reaching an internal package index
+### Installing behind an internal pip index
 
-On machines whose pip is pinned to an internal index (e.g. CERN's acc-py),
-`pip install .` dies offsite because build isolation tries to download
-`setuptools` from that index. Point this one install at PyPI instead:
-
-```bash
-pip install -i https://pypi.org/simple .
-```
-
-Alternatives: `pip install --no-build-isolation .` (uses your existing
-setuptools, no network at all), or fix it permanently with
-`pip config set global.index-url https://pypi.org/simple`
-(`pip config debug` shows which config file pins the index). Or skip
-installing entirely — `./bin/bunchrender` runs straight from the clone.
+`pip install .` (and `pip install -e .`) needs **no network at all**: the
+repo ships a self-contained stdlib-only build backend, so it works even when
+pip is pinned to an unreachable internal index (e.g. CERN's acc-py offsite).
+If your pip config causes other trouble, `pip config debug` shows which file
+pins the index (`pip config set global.index-url https://pypi.org/simple`
+resets it) — or skip installing entirely; `./bin/bunchrender` runs straight
+from the clone.
 
 ## Quick start (any platform)
 
@@ -200,6 +198,7 @@ bunchrender INPUT [-o out.blend]
   --render-dir DIR        render output location (default <output>_renders)
   --cameras LIST          cameras to render (default all)
   --format mp4|png        movie per camera, or PNG frame folders
+  --gpu                   render on the GPU (Metal/CUDA/OptiX/HIP/oneAPI)
   --views LIST            which views to build (default all)
   --elements FILE         beamline geometry: g4bl VRML (.wrl) or CSV
   --elements-max-radius MM  drop shapes wider than this (default 1000)

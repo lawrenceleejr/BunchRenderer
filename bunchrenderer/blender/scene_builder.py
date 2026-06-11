@@ -59,6 +59,7 @@ def parse_args():
     p.add_argument("--cameras", default="all")
     p.add_argument("--no-hull", action="store_true")
     p.add_argument("--no-hud", action="store_true")
+    p.add_argument("--gpu", action="store_true")
     p.add_argument("--fade-in", type=float, default=0.75)
     p.add_argument("--hold", type=float, default=0.5)
     p.add_argument("--fade-out", type=float, default=1.5)
@@ -292,6 +293,34 @@ def kelvin_to_rgb(kelvin):
     return tuple(c ** 2.2 for c in srgb)  # rough sRGB -> linear
 
 
+def enable_gpu():
+    """Enable whichever Cycles GPU backend has devices (Metal on Apple
+    Silicon, OPTIX/CUDA on NVIDIA, HIP on AMD, oneAPI on Intel)."""
+    try:
+        prefs = bpy.context.preferences.addons["cycles"].preferences
+    except KeyError:
+        print("[scene_builder] Cycles preferences unavailable; using CPU")
+        return False
+    for dtype in ("OPTIX", "CUDA", "HIP", "METAL", "ONEAPI"):
+        try:
+            prefs.compute_device_type = dtype
+        except TypeError:
+            continue
+        try:
+            prefs.refresh_devices()
+        except AttributeError:
+            prefs.get_devices()
+        gpus = [d for d in prefs.devices if d.type != "CPU"]
+        if gpus:
+            for d in prefs.devices:
+                d.use = d.type != "CPU"
+            print(f"[scene_builder] GPU rendering ({dtype}): "
+                  + ", ".join(d.name for d in gpus))
+            return True
+    print("[scene_builder] --gpu requested but no GPU devices found; using CPU")
+    return False
+
+
 def make_area_light(name, location, target, size, power, temperature=4000.0):
     ld = bpy.data.lights.new(name, "AREA")
     ld.size = size
@@ -469,10 +498,7 @@ class Builder:
         scene.render.engine = "CYCLES"
         scene.cycles.samples = self.args.samples
         scene.cycles.use_denoising = True
-        try:
-            scene.cycles.device = "CPU"
-        except Exception:
-            pass
+        scene.cycles.device = "GPU" if self.args.gpu and enable_gpu() else "CPU"
         scene.render.use_motion_blur = True
         scene.render.motion_blur_shutter = 0.55
         scene.render.fps = self.args.fps

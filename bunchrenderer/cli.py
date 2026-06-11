@@ -64,6 +64,9 @@ def build_parser():
                          + ",".join(CAMERA_IDS) + " or 'all'")
     rd.add_argument("--format", choices=("mp4", "png"), default="mp4",
                     help="rendered output format")
+    rd.add_argument("--gpu", action="store_true",
+                    help="render on the GPU (Metal/CUDA/OptiX/HIP/oneAPI; "
+                         "best with --local — Docker needs a GPU runtime)")
 
     sc = p.add_argument_group("scene")
     sc.add_argument("--views", default="all",
@@ -132,6 +135,8 @@ def _builder_args(args, data_path, blend_path, render_dir):
         out.append("--no-hull")
     if args.no_hud:
         out.append("--no-hud")
+    if args.gpu:
+        out.append("--gpu")
     if args.render:
         out.append("--render")
     return out

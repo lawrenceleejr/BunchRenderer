@@ -1,6 +1,9 @@
+# Self-contained in-tree build backend (PEP 517, stdlib only): `pip install .`
+# needs no network, so it works behind unreachable internal package indexes.
 [build-system]
-requires = ["setuptools>=64"]
-build-backend = "setuptools.build_meta"
+requires = []
+build-backend = "bunchrender_backend"
+backend-path = ["_build"]
 
 [project]
 name = "bunchrenderer"
