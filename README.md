@@ -39,8 +39,8 @@ renders movies — containing:
   the emissive particles and HUD glowing.
 
 Everything renders with Cycles, AgX color management, a reflective floor and
-a subtle glow pass. All text is set in [Tektur](https://fonts.google.com/specimen/Tektur)
-(OFL, bundled and packed into the `.blend`) — Medium for titles, Regular for
+a subtle glow pass. All text is set in [Lora](https://fonts.google.com/specimen/Lora)
+(OFL, bundled and packed into the `.blend`) — Bold for titles, Regular for
 labels and readouts.
 
 ## Running on macOS (no Docker)

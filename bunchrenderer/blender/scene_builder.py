@@ -83,15 +83,15 @@ def parse_args():
 # --------------------------------------------------------------------------
 # Small helpers (data-API only; no operators that need UI context)
 
-# Bundled typeface (Tektur, OFL) loaded by load_fonts(); falls back to
+# Bundled typeface (Lora, OFL) loaded by load_fonts(); falls back to
 # Blender's built-in font when the files aren't found.
 FONTS = {"regular": None, "bold": None}
 
 
 def load_fonts():
     base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
-    for key, fname in (("regular", "Tektur-Regular.ttf"),
-                       ("bold", "Tektur-Medium.ttf")):
+    for key, fname in (("regular", "Lora-Regular.ttf"),
+                       ("bold", "Lora-Bold.ttf")):
         path = os.path.join(base, fname)
         if not os.path.exists(path):
             continue
@@ -703,10 +703,10 @@ class Builder:
             self.mats[f"ov_legend{b}"] = make_material(
                 f"BR_OvLegend{b}", c["particle"], emission=c["particle"],
                 emission_strength=1.8)
-        # Camera-locked HUD panel furniture.
+        # Camera-locked HUD panel furniture (warm neutral, understated).
         self.mats["hud_frame"] = make_material(
-            "BR_HudFrame", (0.3, 0.7, 0.9), emission=(0.3, 0.7, 0.9),
-            emission_strength=1.4)
+            "BR_HudFrame", (0.78, 0.72, 0.58), emission=(0.78, 0.72, 0.58),
+            emission_strength=1.0)
         self.mats["hud_backdrop"] = make_material(
             "BR_HudBackdrop", (0.005, 0.006, 0.01), roughness=1.0, alpha=0.6)
         # Tron-style beamline elements: ghostly solid + brighter wireframe.
