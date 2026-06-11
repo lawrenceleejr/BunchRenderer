@@ -17,10 +17,10 @@ from pathlib import Path
 
 from . import __version__, tracks as tracklib
 
-BLENDER_VERSION = "4.2.3"
+BLENDER_VERSION = "4.5.10"
 DEFAULT_IMAGE = f"bunchrenderer/blender:{BLENDER_VERSION}"
 
-VIEW_IDS = ["beam", "xxpy", "yypx", "xxp", "yyp", "xy", "zpz"]
+VIEW_IDS = ["beam", "xxpy", "xxpyp", "xyyp", "xpyyp", "zpzx", "zpzy"]
 CAMERA_IDS = VIEW_IDS + ["overview"]
 
 

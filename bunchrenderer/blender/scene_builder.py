@@ -7,12 +7,14 @@ Builds an animated scene from resampled track data (see bunchrenderer.tracks):
 
 * "beam"  -- the bunch flying through real space, chased by a camera with
              motion blur, wrapped in an animated convex-hull envelope;
-* phase-space stations -- 3D projections of the 4D transverse phase space
-             (x, x', y) and (y, y', x), plus 2D projections x-x', y-y', x-y
-             and longitudinal dz-Pz, each with labeled axes and its own camera;
+* phase-space stations -- 3D projections of phase space: every 3-subset of
+             the 4D transverse phase space (x, x', y, y') plus longitudinal
+             (dz, Pz, x) and (dz, Pz, y). Each station has labeled axes, a
+             per-frame convex hull, and its own slowly orbiting camera so the
+             evolution of the distribution reads clearly as a movie;
 * "overview" -- a dashboard camera framing all phase-space stations.
 
-Requires Blender >= 4.0 (Cycles, geometry nodes).
+Requires Blender >= 4.0; >= 4.5 recommended (true Kelvin light temperatures).
 """
 
 import argparse
@@ -27,9 +29,9 @@ from mathutils import Vector
 
 FLOOR_Z = -2.6           # world height of the studio floor
 STATION_HALF = 1.5       # data is normalized into a cube of this half-extent
-STATION_SPACING = 11.0
+STATION_SPACING = 14.0
 STATION_COLS = 3
-STATION_ORIGIN = (-STATION_SPACING, -28.0)  # x of first column, y of first row
+STATION_ORIGIN = (-STATION_SPACING, -30.0)  # x of first column, y of first row
 BEAM_LENGTH = 28.0       # corridor length in blender units
 BEAM_HALF_TRANSVERSE = 1.2
 BEAM_HEIGHT = 1.6
@@ -257,13 +259,9 @@ def make_empty(name, location):
     return link(obj)
 
 
-def make_camera(name, location, target=None, lens=50.0, ortho_scale=None):
+def make_camera(name, location, target=None, lens=50.0):
     cd = bpy.data.cameras.new(name)
-    if ortho_scale is not None:
-        cd.type = "ORTHO"
-        cd.ortho_scale = ortho_scale
-    else:
-        cd.lens = lens
+    cd.lens = lens
     cam = bpy.data.objects.new(name, cd)
     cam.location = location
     link(cam)
@@ -275,11 +273,31 @@ def make_camera(name, location, target=None, lens=50.0, ortho_scale=None):
     return cam
 
 
-def make_area_light(name, location, target, size, power, color=(1.0, 1.0, 1.0)):
+def kelvin_to_rgb(kelvin):
+    """Blackbody color fallback for Blender < 4.5 (no native light temperature)."""
+    t = max(kelvin, 1000.0) / 100.0
+    if t <= 66:
+        r = 255.0
+        g = 99.4708025861 * math.log(t) - 161.1195681661
+        b = 0.0 if t <= 19 else 138.5177312231 * math.log(t - 10) - 305.0447927307
+    else:
+        r = 329.698727446 * ((t - 60) ** -0.1332047592)
+        g = 288.1221695283 * ((t - 60) ** -0.0755148492)
+        b = 255.0
+    srgb = (min(max(c, 0.0), 255.0) / 255.0 for c in (r, g, b))
+    return tuple(c ** 2.2 for c in srgb)  # rough sRGB -> linear
+
+
+def make_area_light(name, location, target, size, power, temperature=4000.0):
     ld = bpy.data.lights.new(name, "AREA")
     ld.size = size
     ld.energy = power
-    ld.color = color
+    if hasattr(ld, "use_temperature"):  # Blender >= 4.5: real Kelvin lights
+        ld.use_temperature = True
+        ld.temperature = temperature
+        ld.color = (1.0, 1.0, 1.0)
+    else:
+        ld.color = kelvin_to_rgb(temperature)
     obj = bpy.data.objects.new(name, ld)
     obj.location = location
     link(obj)
@@ -342,22 +360,23 @@ def compute_channels(data):
     return ch
 
 
-# (channel, axis label) per axis; 2 axes = flat 2D projection.
+# (channel, axis label) per axis. All views are 3D projections; the four
+# transverse ones cover every 3-subset of the 4D phase space (x, x', y, y').
 VIEW_DEFS = {
-    "xxpy": {"axes": [("x", "x [mm]"), ("xp", "x′ [mrad]"), ("y", "y [mm]")],
-             "title": "4D phase space — (x, x′, y)"},
-    "yypx": {"axes": [("y", "y [mm]"), ("yp", "y′ [mrad]"), ("x", "x [mm]")],
-             "title": "4D phase space — (y, y′, x)"},
-    "xxp":  {"axes": [("x", "x [mm]"), ("xp", "x′ [mrad]")],
-             "title": "Horizontal phase space (x, x′)"},
-    "yyp":  {"axes": [("y", "y [mm]"), ("yp", "y′ [mrad]")],
-             "title": "Vertical phase space (y, y′)"},
-    "xy":   {"axes": [("x", "x [mm]"), ("y", "y [mm]")],
-             "title": "Transverse profile (x, y)"},
-    "zpz":  {"axes": [("dz", "Δz [mm]"), ("pz", "Pz [MeV/c]")],
-             "title": "Longitudinal phase space (Δz, Pz)"},
+    "xxpy":  {"axes": [("x", "x [mm]"), ("xp", "x′ [mrad]"), ("y", "y [mm]")],
+              "title": "4D phase space — (x, x′, y)"},
+    "xxpyp": {"axes": [("x", "x [mm]"), ("xp", "x′ [mrad]"), ("yp", "y′ [mrad]")],
+              "title": "4D phase space — (x, x′, y′)"},
+    "xyyp":  {"axes": [("x", "x [mm]"), ("y", "y [mm]"), ("yp", "y′ [mrad]")],
+              "title": "4D phase space — (x, y, y′)"},
+    "xpyyp": {"axes": [("xp", "x′ [mrad]"), ("y", "y [mm]"), ("yp", "y′ [mrad]")],
+              "title": "4D phase space — (x′, y, y′)"},
+    "zpzx":  {"axes": [("dz", "Δz [mm]"), ("pz", "Pz [MeV/c]"), ("x", "x [mm]")],
+              "title": "Longitudinal — (Δz, Pz, x)"},
+    "zpzy":  {"axes": [("dz", "Δz [mm]"), ("pz", "Pz [MeV/c]"), ("y", "y [mm]")],
+              "title": "Longitudinal — (Δz, Pz, y)"},
 }
-VIEW_ORDER = ["xxpy", "yypx", "xxp", "yyp", "xy", "zpz"]
+VIEW_ORDER = ["xxpy", "xxpyp", "xyyp", "xpyyp", "zpzx", "zpzy"]
 
 
 def axis_norm(channel_data):
@@ -434,10 +453,15 @@ class Builder:
             rl = tree.nodes.new("CompositorNodeRLayers")
             glare = tree.nodes.new("CompositorNodeGlare")
             glare.glare_type = "FOG_GLOW"
-            glare.quality = "MEDIUM"
-            glare.threshold = 1.0
-            glare.size = 8
-            glare.mix = -0.7
+            if glare.inputs.get("Strength") is not None:  # Blender >= 4.4 sockets
+                glare.inputs["Threshold"].default_value = 1.0
+                glare.inputs["Strength"].default_value = 0.18
+                glare.inputs["Size"].default_value = 0.6
+            else:  # Blender <= 4.3 node properties
+                glare.quality = "MEDIUM"
+                glare.threshold = 1.0
+                glare.size = 8
+                glare.mix = -0.7
             comp = tree.nodes.new("CompositorNodeComposite")
             tree.links.new(rl.outputs["Image"], glare.inputs["Image"])
             tree.links.new(glare.outputs["Image"], comp.inputs["Image"])
@@ -558,13 +582,14 @@ class Builder:
             make_text(f"beam_ticklbl_{k}", f"z = {zval:.3g} m", 0.22,
                       tick + Vector((0.0, 0, -0.66)), txmat, target=cam)
 
-        # Corridor lighting.
+        # Corridor lighting: warm key lights along the flight path with a
+        # slightly cooler (but still warm) rim from the side.
         for k, yfrac in enumerate((0.15, 0.5, 0.85)):
             loc = (2.5, BEAM_LENGTH * yfrac, BEAM_HEIGHT + 8.0)
             make_area_light(f"BeamKey_{k}", loc, target, size=9.0, power=3000,
-                            color=(1.0, 0.97, 0.92))
+                            temperature=3100.0)
         make_area_light("BeamRim", (-6.0, BEAM_LENGTH * 0.7, BEAM_HEIGHT + 1.5),
-                        target, size=12.0, power=1500, color=(0.75, 0.85, 1.0))
+                        target, size=12.0, power=1500, temperature=3900.0)
 
     # -- phase-space stations ------------------------------------------------
 
@@ -586,10 +611,7 @@ class Builder:
             for i in range(self.N):
                 vals = [(channels[ch][s][i] - norms[a][0]) * norms[a][2]
                         for a, (ch, _) in enumerate(axes)]
-                if len(axes) == 2:
-                    row.append((vals[0], 0.0, vals[1]))
-                else:
-                    row.append((vals[0], vals[1], vals[2]))
+                row.append((vals[0], vals[1], vals[2]))
             coords.append(row)
 
         make_view_objects(vid, coords, self.sample_frames, center,
@@ -598,12 +620,18 @@ class Builder:
 
         axmat, txmat = self.mats["axis"], self.mats["text"]
         tgt = make_empty(f"{vid}_target", center)
-        if len(axes) == 2:
-            cam = make_camera(f"Cam_{vid}", center + Vector((0, -10.0, 0.45)),
-                              target=tgt, ortho_scale=10.0)
-        else:
-            cam = make_camera(f"Cam_{vid}", center + Vector((7.1, -9.6, 5.1)),
-                              target=tgt, lens=40)
+        # The camera hangs off a pivot that slowly orbits the station, so the
+        # 3D shape of the evolving hull reads clearly in the animation.
+        pivot = make_empty(f"{vid}_campivot", center)
+        pivot.rotation_euler = (0.0, 0.0, math.radians(-11.0))
+        pivot.keyframe_insert("rotation_euler", frame=1)
+        pivot.rotation_euler = (0.0, 0.0, math.radians(14.0))
+        pivot.keyframe_insert("rotation_euler", frame=self.args.frames)
+        for fc in pivot.animation_data.action.fcurves:
+            for kp in fc.keyframe_points:
+                kp.interpolation = "LINEAR"
+        cam = make_camera(f"Cam_{vid}", (7.1, -9.6, 5.1), target=tgt, lens=40)
+        cam.parent = pivot
         self.cameras[vid] = cam
 
         def range_label(a):
@@ -612,34 +640,22 @@ class Builder:
             return f"{label}\n[{fmt(cen - half)}, {fmt(cen + half)}]"
 
         ext = STATION_HALF + 0.45  # axis arrows slightly past the data cube
-        if len(axes) == 2:
-            for a, d in ((0, Vector((1, 0, 0))), (1, Vector((0, 0, 1)))):
-                make_arrow(f"{vid}_ax{a}", center - d * ext, d, 2 * ext, 0.02, axmat)
-            make_text(f"{vid}_lbl0", range_label(0), 0.24,
-                      center + Vector((ext + 0.45, 0, 0)), txmat,
-                      target=cam, align_x="LEFT")
-            make_text(f"{vid}_lbl1", range_label(1), 0.24,
-                      center + Vector((0.5, 0, ext + 0.35)), txmat,
-                      target=cam, align_x="LEFT")
-            title_z = ext + 0.75
-        else:
-            corner = center + Vector((-ext, -ext, -ext))
-            dirs = [Vector((1, 0, 0)), Vector((0, 1, 0)), Vector((0, 0, 1))]
-            for a, d in enumerate(dirs):
-                make_arrow(f"{vid}_ax{a}", corner, d, 2 * ext, 0.02, axmat)
-            make_text(f"{vid}_lbl0", range_label(0), 0.21,
-                      corner + Vector((2 * ext + 0.6, 0, 0.8)), txmat, target=cam)
-            # The depth-axis label is lifted above the hull and pushed left so
-            # the camera can always see it.
-            make_text(f"{vid}_lbl1", range_label(1), 0.21,
-                      corner + Vector((-1.95, 2 * ext + 0.6, 2 * ext - 0.95)),
-                      txmat, target=cam)
-            make_text(f"{vid}_lbl2", range_label(2), 0.21,
-                      corner + Vector((-0.8, 0, ext)), txmat, target=cam)
-            title_z = ext + 0.95
+        corner = center + Vector((-ext, -ext, -ext))
+        dirs = [Vector((1, 0, 0)), Vector((0, 1, 0)), Vector((0, 0, 1))]
+        for a, d in enumerate(dirs):
+            make_arrow(f"{vid}_ax{a}", corner, d, 2 * ext, 0.02, axmat)
+        make_text(f"{vid}_lbl0", range_label(0), 0.21,
+                  corner + Vector((2 * ext + 0.6, 0, 0.8)), txmat, target=cam)
+        # The depth-axis label is lifted above the hull and pushed left so
+        # the camera can always see it.
+        make_text(f"{vid}_lbl1", range_label(1), 0.21,
+                  corner + Vector((-1.95, 2 * ext + 0.6, 2 * ext - 0.95)),
+                  txmat, target=cam)
+        make_text(f"{vid}_lbl2", range_label(2), 0.21,
+                  corner + Vector((-0.8, 0, ext)), txmat, target=cam)
 
         make_text(f"{vid}_title", vdef["title"], 0.28,
-                  center + Vector((0, 0, title_z)), txmat, target=cam)
+                  center + Vector((0, 0, ext + 0.95)), txmat, target=cam)
         make_cylinder(f"{vid}_pedestal", center + Vector((0, 0, FLOOR_Z + 0.2)),
                       radius=3.1, depth=0.4, material=self.mats["pedestal"])
         return center
@@ -664,12 +680,13 @@ class Builder:
                           target=tgt, lens=38)
         self.cameras["overview"] = cam
 
+        # Warm three-point studio rig (Kelvin temperatures, Blender >= 4.5).
         make_area_light("StationsKey", mid + Vector((4, -6, 14)), tgt,
-                        size=extent + 14, power=22000, color=(1.0, 0.97, 0.93))
+                        size=extent + 14, power=22000, temperature=3100.0)
         make_area_light("StationsFill", mid + Vector((-extent, -10, 7)), tgt,
-                        size=14, power=6000, color=(0.8, 0.88, 1.0))
+                        size=14, power=6000, temperature=3700.0)
         make_area_light("StationsRim", mid + Vector((0, extent * 0.8 + 8, 5)), tgt,
-                        size=18, power=8000, color=(0.95, 0.97, 1.0))
+                        size=18, power=8000, temperature=4200.0)
 
     def build_floor(self):
         make_plane("Floor", (0, -14, FLOOR_Z), 320, self.mats["floor"])

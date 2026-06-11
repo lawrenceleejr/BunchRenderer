@@ -8,10 +8,12 @@ of per-track CSVs) and it builds a `.blend` file containing:
 * **Real-space beam flight** — the bunch traveling through 3D space, chased by
   a camera with motion blur and depth of field, with a ruler showing real
   `z` positions and an axis tripod riding alongside the bunch.
-* **3D projections of the 4D transverse phase space** — `(x, x′, y)` and
-  `(y, y′, x)` point clouds on lit pedestals.
-* **More phase-space projections** — `x–x′`, `y–y′`, the transverse profile
-  `x–y`, and the longitudinal phase space `Δz–Pz`.
+* **3D projections of the 4D transverse phase space** — all four 3-subsets of
+  `(x, x′, y, y′)`, plus the longitudinal projections `(Δz, Pz, x)` and
+  `(Δz, Pz, y)`, each on its own lit pedestal.
+* **Everything animated** — every view evolves along the beamline over the
+  timeline, and each station camera slowly orbits its pedestal so the 3D
+  shape of the distribution reads clearly in motion.
 * **Convex-hull envelopes** — every view wraps the particle ensemble in a
   soft-metallic, semi-transparent convex hull, recomputed *every frame* with
   geometry nodes, so you can watch the beam envelope rotate, shear and breathe
@@ -19,8 +21,9 @@ of per-track CSVs) and it builds a `.blend` file containing:
 * **Labeled axes** on every view (names, units, and the real data ranges), a
   title per view, and an `overview` dashboard camera framing all stations.
 
-The whole scene uses Cycles with a three-point studio lighting rig, a
-reflective floor, AgX color management, and a subtle glow pass.
+The whole scene uses Cycles with a warm three-point studio lighting rig (real
+Kelvin color temperatures, 3100–4200 K), a reflective floor, AgX color
+management, and a subtle glow pass.
 
 Blender runs **inside Docker by default** (no local install needed); a local
 Blender can be used instead with `--local`.
@@ -32,7 +35,8 @@ pip install .
 ```
 
 The CLI itself has no Python dependencies. You need either Docker (default
-mode) or a local Blender ≥ 4.0 (`--local` mode).
+mode) or a local Blender (`--local` mode) — version ≥ 4.5 recommended (real
+Kelvin light temperatures); ≥ 4.0 works with an approximated warm tint.
 
 ## Quick start
 
@@ -58,7 +62,7 @@ evolve. By default **only the `.blend` is produced**; `--render` switches on
 the fully headless render.
 
 On first use the default mode builds a small Docker image
-(`bunchrenderer/blender:4.2.3`, Ubuntu + official Blender LTS build). Use
+(`bunchrenderer/blender:4.5.10`, Ubuntu + official Blender LTS build). Use
 `--docker-image IMAGE` to substitute any image that provides a `blender`
 command on its `PATH`.
 
@@ -89,15 +93,19 @@ so every view shows the true *simultaneous* state of the bunch.
 | id | camera | contents |
 |----|--------|----------|
 | `beam` | `Cam_beam` (follow-cam, motion blur, DoF) | bunch in real space + hull + z ruler |
-| `xxpy` | `Cam_xxpy` | 3D projection (x, x′, y) of 4D phase space |
-| `yypx` | `Cam_yypx` | 3D projection (y, y′, x) of 4D phase space |
-| `xxp` | `Cam_xxp` (ortho) | horizontal phase space x–x′ |
-| `yyp` | `Cam_yyp` (ortho) | vertical phase space y–y′ |
-| `xy` | `Cam_xy` (ortho) | transverse beam profile |
-| `zpz` | `Cam_zpz` (ortho) | longitudinal phase space Δz–Pz |
+| `xxpy` | `Cam_xxpy` (orbiting) | 3D projection (x, x′, y) of 4D phase space |
+| `xxpyp` | `Cam_xxpyp` (orbiting) | 3D projection (x, x′, y′) of 4D phase space |
+| `xyyp` | `Cam_xyyp` (orbiting) | 3D projection (x, y, y′) of 4D phase space |
+| `xpyyp` | `Cam_xpyyp` (orbiting) | 3D projection (x′, y, y′) of 4D phase space |
+| `zpzx` | `Cam_zpzx` (orbiting) | longitudinal phase space (Δz, Pz, x) |
+| `zpzy` | `Cam_zpzy` (orbiting) | longitudinal phase space (Δz, Pz, y) |
 | — | `Cam_overview` | dashboard framing all phase-space stations |
 
-Select what gets built with `--views xxp,beam,...` and what gets rendered in
+All stations animate in lock-step with the beam flight: scrubbing the timeline
+(or rendering with `--render`) shows the distributions evolving along the
+beamline in every projection simultaneously.
+
+Select what gets built with `--views xxpy,beam,...` and what gets rendered in
 headless mode with `--cameras beam,overview,...` (default: all). Axis labels
 show the real units and the `[min, max]` range each station is normalized to;
 the beam view prints its transverse exaggeration factor (beams are long and
