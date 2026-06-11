@@ -68,6 +68,21 @@ if no GPU device is found.
 is equivalent to `./bin/bunchrender …`. Movies land in `<output>_renders/`,
 one MP4 per camera, alongside the `.blend`.
 
+### Watching a long render
+
+Output is written **directly to the final destination** (`--render-dir`,
+default `<output>_renders/`), so you can watch it fill up while Blender works.
+With `--format png` each frame appears as `…/<camera>/frame_NNNN.png` the
+moment it finishes — open the folder and keep refreshing the newest file.
+With the default `--format mp4` the file grows during rendering but is only
+playable once its camera finishes (one MP4 per camera, so finished cameras
+are watchable while later ones still render). The terminal shows Blender's
+per-frame `Fra:NNN …` progress lines, and each camera announces its output
+path when it starts. The `.blend` is saved *before* rendering begins, and a
+crashed or interrupted render keeps everything rendered so far; only the
+hidden `.bunchrenderer-*` staging folder (input data for Blender) is
+temporary, and it is removed automatically.
+
 Prefer `pip install -e .` for a git clone — the editable install tracks your
 checkout, so a `git pull` takes effect immediately. A plain `pip install .`
 snapshots the code: after pulling you must reinstall, or the `bunchrender`
@@ -270,7 +285,9 @@ bunchrender examples/gaussian_beam.txt --render --elements examples/beamline_sol
 The CLI parses and resamples the tracks (plus any geometry) to JSON, stages it
 with a scene-builder script in a temp directory, and launches
 `blender -b --factory-startup --python scene_builder.py` — in Docker, the
-staging directory is the only bind mount. Inside Blender, each view is a mesh
+staging directory, the output directory and the render directory are bind
+mounts, so the `.blend` and renders are written straight to their final
+host paths. Inside Blender, each view is a mesh
 with one vertex per particle, animated through the time samples with absolute
 shape keys; geometry-node modifiers turn it into renderable points and a
 per-frame convex hull. Light fades are keyframed Kelvin-temperature area

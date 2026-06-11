@@ -1213,7 +1213,8 @@ class Builder:
                 ims.file_format = "PNG"
                 scene.render.filepath = os.path.join(rdir, label, "frame_")
             print(f"[scene_builder] rendering camera '{label}' "
-                  f"({scene.frame_start}-{scene.frame_end})...")
+                  f"({scene.frame_start}-{scene.frame_end}) -> "
+                  f"{scene.render.filepath}...", flush=True)
             bpy.ops.render.render(animation=True)
         print(f"[scene_builder] renders written to {rdir}")
 

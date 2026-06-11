@@ -230,7 +230,7 @@ def _ensure_default_image():
                     "-t", DEFAULT_IMAGE, str(context)], check=True)
 
 
-def _run_docker(args, staging, builder_args):
+def _run_docker(args, staging, out_path, render_dir, builder_args):
     if shutil.which("docker") is None:
         raise SystemExit("error: docker not found on PATH. Install Docker, or use "
                          "--local to run a local Blender install.")
@@ -242,7 +242,11 @@ def _run_docker(args, staging, builder_args):
     if hasattr(os, "getuid"):
         cmd += ["-u", f"{os.getuid()}:{os.getgid()}"]
     cmd += ["-e", "HOME=/tmp",
-            "-v", f"{staging}:/work", "-w", "/work", image,
+            "-v", f"{staging}:/work",
+            "-v", f"{out_path.parent}:/out"]
+    if args.render:
+        cmd += ["-v", f"{render_dir}:/render"]
+    cmd += ["-w", "/work", image,
             "blender", "-b", "--factory-startup",
             "--python", "/work/scene_builder.py", "--"] + builder_args
     return subprocess.call(cmd)
@@ -300,40 +304,41 @@ def main(argv=None):
     print(f"[bunchrender] {meta['n_samples']} time samples, "
           f"t = {meta['t_start_ns']:.3f} .. {meta['t_end_ns']:.3f} ns")
 
-    # Stage everything Blender needs in one directory so a single Docker bind
-    # mount covers data in and artifacts out.
+    # Staging holds only the inputs Blender needs (track data + builder
+    # script). The .blend and all renders are written directly to their final
+    # destinations, so long renders can be watched as they progress and a
+    # crash loses nothing that was already rendered.
     staging = Path(tempfile.mkdtemp(prefix=".bunchrenderer-", dir=out_path.parent))
     try:
         (staging / "data.json").write_text(json.dumps(bundle))
         shutil.copy(_pkg_path("blender", "scene_builder.py"),
                     staging / "scene_builder.py")
-        (staging / "renders").mkdir()
+        if args.render:
+            render_dir.mkdir(parents=True, exist_ok=True)
+            print(f"[bunchrender] renders will appear in {render_dir} as they "
+                  "progress (PNG frames per frame; each MP4 finalizes when its "
+                  "camera finishes)")
 
         use_local = args.local or args.blender is not None
         if use_local:
             builder_args = _builder_args(args, staging / "data.json",
-                                         staging / "scene.blend",
-                                         staging / "renders")
+                                         out_path, render_dir)
             rc = _run_local(args, staging, builder_args)
         else:
             builder_args = _builder_args(args, "/work/data.json",
-                                         "/work/scene.blend", "/work/renders")
-            rc = _run_docker(args, staging, builder_args)
+                                         f"/out/{out_path.name}", "/render")
+            rc = _run_docker(args, staging, out_path, render_dir, builder_args)
         if rc != 0:
             raise SystemExit(f"error: Blender exited with status {rc}")
 
-        blend_tmp = staging / "scene.blend"
-        if not blend_tmp.exists():
+        if not out_path.exists():
             raise SystemExit("error: Blender did not produce a .blend file")
-        shutil.move(str(blend_tmp), str(out_path))
         print(f"[bunchrender] wrote {out_path}")
 
         if args.render:
-            produced = [p for p in sorted((staging / "renders").rglob("*")) if p.is_file()]
+            produced = [p for p in sorted(render_dir.rglob("*")) if p.is_file()]
             if produced:
-                render_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(staging / "renders", render_dir, dirs_exist_ok=True)
-                print(f"[bunchrender] wrote {len(produced)} render file(s) to {render_dir}")
+                print(f"[bunchrender] {len(produced)} render file(s) in {render_dir}")
             else:
                 print("[bunchrender] warning: no render output was produced")
     finally:
