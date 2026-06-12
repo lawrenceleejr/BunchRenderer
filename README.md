@@ -33,10 +33,10 @@ renders movies — containing:
   axis are shown sweeping around the straight reference ruler (with per-beam
   centroid guide trails), while the bunches themselves stay framed by the
   chase camera.
-* **A polished timeline** — warm Kelvin-temperature studio lights ramp on
-  (~0.75 s), the beam evolves along the beamline, the final state holds while
-  the cameras keep orbiting, and the lights fade to black (~1.5 s) leaving
-  the emissive particles and HUD glowing.
+* **A polished timeline** — the scene wakes up from black (~0.75 s: lamps,
+  every emissive material and the text overlays ramp together), the beam
+  evolves along the beamline, the final state holds while the cameras keep
+  orbiting, and everything fades back to black (~1.5 s).
 
 Everything renders with Cycles, AgX color management, a reflective floor and
 a subtle glow pass. All text is set in [Lora](https://fonts.google.com/specimen/Lora)
@@ -235,9 +235,9 @@ scene.
 
 ```text
 |-- fade-in --|------------ evolution ------------|-- hold --|-- fade-out --|
-   lights on     bunch travels, phase space         final       lights off,
-   (0.75 s)      evolves, cameras orbit             state       glow remains
-                 (--frames / --fps)                 (0.5 s)     (1.5 s)
+  wake from      bunch travels, phase space         final      everything
+  black           evolves, cameras orbit            state      fades to black
+  (0.75 s)        (--frames / --fps)                (0.5 s)    (1.5 s)
 ```
 
 Tune with `--fade-in`, `--hold`, `--fade-out` (seconds; 0 disables a phase).

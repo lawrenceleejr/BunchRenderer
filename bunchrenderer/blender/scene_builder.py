@@ -911,6 +911,9 @@ class Builder:
             ov.cycles.use_denoising = False
         except AttributeError:
             pass
+        # A narrower pixel filter keeps the glyph edges crisp (the default
+        # 1.5 px reconstruction filter visibly softens small text).
+        ov.render.filter_size = 1.0
         ov.render.film_transparent = True
         ov.render.use_motion_blur = False
         try:
@@ -944,6 +947,7 @@ class Builder:
         cu.size = size / half_w
         cu.align_x = align_x
         cu.align_y = "CENTER"
+        cu.resolution_u = 16  # smoother glyph outlines than the default 12
         apply_font(cu, bold)
         cu.materials.append(material or self.mats["ov_text"])
         obj = bpy.data.objects.new(name, cu)
@@ -1253,26 +1257,47 @@ class Builder:
             "StationsRim", mid + Vector((0, extent * 0.8 + 8, 5)), tgt,
             size=18, power=8000, temperature=4200.0))
 
-    def setup_light_fades(self):
-        """Lights ramp on over the intro, hold, then fade to black at the end
-        (emissive materials -- particles, text, wireframes -- keep glowing)."""
-        if not self.lights:
+    def setup_fades(self):
+        """The whole scene wakes up from black and returns to black: lamps,
+        every emissive material (particles, guides, wireframes, HUD and the
+        composited text overlays) and the world background all ramp together."""
+        if self.fade_in_f <= 0 and self.fade_out_f <= 0:
             return
         f_on = 1 + self.fade_in_f
         f_off = self.total_frames - self.fade_out_f
-        for obj in self.lights:
-            ld = obj.data
-            full = ld.energy
+
+        def ramp(holder, prop, full):
             if self.fade_in_f > 0:
-                ld.energy = 0.0
-                ld.keyframe_insert("energy", frame=1)
-                ld.energy = full
-                ld.keyframe_insert("energy", frame=f_on)
+                setattr(holder, prop, 0.0)
+                holder.keyframe_insert(prop, frame=1)
+                setattr(holder, prop, full)
+                holder.keyframe_insert(prop, frame=f_on)
             if self.fade_out_f > 0:
-                ld.energy = full
-                ld.keyframe_insert("energy", frame=f_off)
-                ld.energy = 0.0
-                ld.keyframe_insert("energy", frame=self.total_frames)
+                setattr(holder, prop, full)
+                holder.keyframe_insert(prop, frame=f_off)
+                setattr(holder, prop, 0.0)
+                holder.keyframe_insert(prop, frame=self.total_frames)
+
+        for obj in self.lights:
+            ramp(obj.data, "energy", obj.data.energy)
+
+        for mat in bpy.data.materials:
+            if not mat.node_tree:
+                continue
+            bsdf = next((n for n in mat.node_tree.nodes
+                         if n.type == "BSDF_PRINCIPLED"), None)
+            if bsdf is None:
+                continue
+            sock = bsdf.inputs.get("Emission Strength")
+            if sock is None or sock.default_value <= 0.0:
+                continue
+            ramp(sock, "default_value", sock.default_value)
+
+        world = bpy.context.scene.world
+        if world and world.node_tree:
+            bg = world.node_tree.nodes.get("Background")
+            if bg:
+                ramp(bg.inputs[1], "default_value", bg.inputs[1].default_value)
 
     def build_floor(self):
         make_plane("Floor", (0, -14, FLOOR_Z), 320, self.mats["floor"])
@@ -1359,7 +1384,7 @@ class Builder:
             self.build_beam_view()
         self.build_stations()
         self.build_floor()
-        self.setup_light_fades()
+        self.setup_fades()
         scene = bpy.context.scene
         default = "beam" if "beam" in self.cameras else next(iter(self.cameras), None)
         scene.camera = self.cameras.get(default)
