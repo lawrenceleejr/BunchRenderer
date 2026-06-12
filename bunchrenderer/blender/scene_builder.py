@@ -955,9 +955,13 @@ class Builder:
         ov["scene"].collection.objects.link(obj)
         return obj
 
-    def add_z_readout(self, label, prefix, size, x, y, depth, step=8):
+    def add_z_readout(self, label, prefix, size, x, y, depth, step=None):
         """Animated 'z = ... m' readout: a sequence of camera-locked texts
-        with stepped visibility keyframes (text bodies are not animatable)."""
+        with stepped visibility keyframes (text bodies are not animatable).
+        The update step scales with the timeline so long movies don't spawn
+        thousands of text objects (~120 segments per camera at most)."""
+        if step is None:
+            step = max(8, self.total_frames // 120)
         f0 = 1 + self.fade_in_f
 
         def z_at(frame):

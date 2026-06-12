@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -95,10 +96,14 @@ def build_parser():
     sc.add_argument("--no-hud", action="store_true",
                     help="skip the 2D sub-projection HUD panels on the "
                          "phase-space station cameras")
-    sc.add_argument("--frames", type=int, default=240,
-                    help="length of the beam-evolution part of the animation, "
-                         "in frames (fades and hold are added on top)")
+    sc.add_argument("--frames", type=int, default=None,
+                    help="length of the beam-evolution part of the animation in "
+                         "frames (default: auto — scales with the granularity "
+                         "of the input data, up to --max-duration)")
     sc.add_argument("--fps", type=int, default=24, help="frames per second")
+    sc.add_argument("--max-duration", type=float, default=180.0, metavar="SEC",
+                    help="cap on the total movie length (including fades) used "
+                         "when --frames is auto")
     sc.add_argument("--fade-in", type=float, default=0.75, metavar="SEC",
                     help="lights-on ramp before the beam evolution starts "
                          "(0 disables)")
@@ -115,8 +120,10 @@ def build_parser():
     da = p.add_argument_group("input data")
     da.add_argument("--max-particles", type=int, default=300,
                     help="cap on the number of particles kept in the scene")
-    da.add_argument("--time-samples", type=int, default=100,
-                    help="number of time samples the tracks are resampled onto")
+    da.add_argument("--time-samples", type=int, default=None,
+                    help="number of time samples the tracks are resampled onto "
+                         "(default: auto — matches the input granularity, "
+                         "memory-capped by the particle count)")
     da.add_argument("--drift-length", type=float, default=2000.0, metavar="MM",
                     help="ballistic drift length used when the input contains only "
                          "a single point per particle (e.g. a beam at one plane)")
@@ -153,10 +160,35 @@ def _builder_args(args, data_path, blend_path, render_dir):
     return out
 
 
-def _load_beams(args, in_paths, labels):
-    """Load every input and resample all beams onto one shared time grid."""
-    track_sets = [tracklib.load_tracks(p, drift_length=args.drift_length)
-                  for p in in_paths]
+def _auto_timing(args, track_sets):
+    """Scale the movie with the granularity of the input data.
+
+    Unless given explicitly, the resampling grid matches the number of steps
+    in the tracks (memory-capped by the particle count) and the evolution
+    runs ~2 frames per sample, so structure present in the input is visible
+    in time — bounded by --max-duration (fades included).
+    """
+    n_beams = len(track_sets)
+    per_cap = max(10, args.max_particles // n_beams)
+    n_total = sum(min(len(ts), per_cap) for ts in track_sets)
+    steps = max(int(statistics.median(len(tr["t"]) for tr in ts))
+                for ts in track_sets)
+    fade_f = int(round((args.fade_in + args.hold + args.fade_out) * args.fps))
+    auto = args.time_samples is None or args.frames is None
+    if args.time_samples is None:
+        budget = min(2000, max(100, 250_000 // max(n_total, 1)))
+        args.time_samples = max(100, min(steps, budget))
+    if args.frames is None:
+        max_evo = max(48, int(args.max_duration * args.fps) - fade_f)
+        args.frames = min(max(240, 2 * args.time_samples), max_evo)
+    if auto:
+        print(f"[bunchrender] timing: ~{steps} steps in the input -> "
+              f"{args.time_samples} time samples, {args.frames} evolution "
+              f"frames ({(args.frames + fade_f) / args.fps:.1f} s movie)")
+
+
+def _resample_beams(args, track_sets, labels):
+    """Resample all beams onto one shared time grid."""
     t0 = min(tracklib.time_range(ts)[0] for ts in track_sets)
     t1 = max(tracklib.time_range(ts)[1] for ts in track_sets)
     per_beam_cap = max(10, args.max_particles // len(track_sets))
@@ -467,8 +499,6 @@ def main(argv=None):
     print(f"[bunchrender] {__version__} running from {_pkg_path()}")
     args.views = _validate_csv_list(args.views, VIEW_IDS, "--views")
     args.cameras = _validate_csv_list(args.cameras, CAMERA_IDS, "--cameras")
-    args.frames = max(2, args.frames)
-    args.time_samples = max(2, args.time_samples)
     args.max_particles = max(4, args.max_particles)
 
     in_paths = [Path(p) for p in args.inputs]
@@ -487,7 +517,12 @@ def main(argv=None):
         raise SystemExit("error: --labels must name each input exactly once")
 
     try:
-        bundle = _load_beams(args, in_paths, labels)
+        track_sets = [tracklib.load_tracks(p, drift_length=args.drift_length)
+                      for p in in_paths]
+        _auto_timing(args, track_sets)
+        args.frames = max(2, args.frames)
+        args.time_samples = max(2, args.time_samples)
+        bundle = _resample_beams(args, track_sets, labels)
         elements = _load_elements(args)
         if elements is not None:
             bundle["elements"] = elements

@@ -167,9 +167,8 @@ normalized to the reference momentum, `z` the longitudinal offset from the
 reference particle and `delta` = Δp/p₀. The lab position becomes `s + z`,
 momenta stay in units of p₀ (slopes are unit-independent; the Pz axis then
 reads ≈ 1+δ), and the animation clock follows `s`. Repeated rows at the same
-`s` (thin elements, markers) are dropped automatically. For long lattices,
-raise `--time-samples` (and `--frames`) to resolve betatron oscillations
-smoothly.
+`s` (thin elements, markers) are dropped automatically. Finely-sliced
+lattices automatically get a longer, finer-sampled movie (see *Timeline*).
 
 **Single-plane beam files** (one row per particle): each particle is
 ballistically drifted `--drift-length` mm along its momentum so there is still
@@ -253,6 +252,14 @@ scene.
 Tune with `--fade-in`, `--hold`, `--fade-out` (seconds; 0 disables a phase).
 Cameras orbit through the entire timeline, including the hold and fades.
 
+**The movie length scales with the input granularity.** By default the
+resampling grid matches the number of steps in the tracks (memory-capped by
+the particle count) and the evolution runs ~2 frames per sample, so structure
+present in the input is resolvable in time: a 50-station g4bl file gives the
+minimum ~13 s movie, while a finely-sliced tracking file grows the movie up
+to `--max-duration` (default 180 s, fades included). Explicit `--frames` /
+`--time-samples` override the automation entirely.
+
 ## Options
 
 ```text
@@ -271,12 +278,13 @@ bunchrender INPUT [INPUT2 ...] [-o out.blend]
   --elements-max-radius MM  drop shapes wider than this (default 1000)
   --no-hull               skip the convex-hull envelopes
   --no-hud                skip the 2D sub-projection HUD panels
-  --frames N --fps N      evolution length (default 240 @ 24 fps)
+  --frames N --fps N      evolution length (default: auto from input granularity)
+  --max-duration SEC      cap for the auto movie length (default 180)
   --fade-in/--hold/--fade-out SEC   timeline polish (0.75 / 0.5 / 1.5)
   --samples N             Cycles samples (default 64, denoised)
   --resolution WxH        default 1920x1080
   --max-particles N       cap particles kept in the scene (default 300)
-  --time-samples N        resampling grid (default 100)
+  --time-samples N        resampling grid (default: auto from input granularity)
   --drift-length MM       drift used for single-point-per-particle inputs
 ```
 
