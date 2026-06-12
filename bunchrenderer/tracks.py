@@ -42,6 +42,7 @@ CSV_ALIASES = {
     "px": "px", "py": "py", "pz": "pz",
     "t": "t", "time": "t",
     "xp": "xp", "x'": "xp", "yp": "yp", "y'": "yp",
+    "s": "s", "delta": "delta", "dpp": "delta", "dp/p": "delta", "de": "delta",
     "pdgid": "pdgid", "pdg": "pdgid",
 }
 
@@ -127,6 +128,38 @@ def _read_g4bl(path):
 # --------------------------------------------------------------------------
 # Directory of per-track CSV files
 
+def _canonical_track(cols, npts):
+    """Accelerator canonical coordinates (MAD-X / Bmad style):
+
+        s, x, px, y, py, z, delta
+
+    with lengths in meters, ``px``/``py`` normalized to the reference
+    momentum, ``z`` the longitudinal offset from the reference particle and
+    ``delta`` = dp/p0. Detected by the presence of an ``s`` column. The lab
+    longitudinal position becomes s+z [mm]; momenta are kept in units of p0
+    (slopes px/pz are unit-independent); time is synthesized from s assuming
+    beta ~ 1 so the animation parameter is the position along the lattice.
+    """
+    zero = [0.0] * npts
+    s = cols["s"]
+    x, y = cols.get("x", zero), cols.get("y", zero)
+    zoff = cols.get("z", zero)
+    delta = cols.get("delta", zero)
+    pxn, pyn = cols.get("px", zero), cols.get("py", zero)
+    tr = _new_track()
+    for i in range(npts):
+        one = 1.0 + delta[i]
+        pz = math.sqrt(max(one * one - pxn[i] ** 2 - pyn[i] ** 2, 1e-12))
+        tr["x"].append(x[i] * 1000.0)
+        tr["y"].append(y[i] * 1000.0)
+        tr["z"].append((s[i] + zoff[i]) * 1000.0)
+        tr["px"].append(pxn[i])
+        tr["py"].append(pyn[i])
+        tr["pz"].append(pz)
+        tr["t"].append(s[i] * 1000.0 / C_MM_PER_NS)
+    return tr
+
+
 def _read_csv_track(path):
     with open(path, newline="") as fh:
         sample = fh.read(4096)
@@ -167,21 +200,25 @@ def _read_csv_track(path):
                 "(x y z [px py pz] [t]) or a header row naming the columns")
 
     idx = {n: i for i, n in enumerate(names) if n}
-    for required in ("x", "y", "z"):
-        if required not in idx:
-            raise TrackError(f"{path}: could not identify column '{required}'")
+    canonical = "s" in idx  # MAD-X / Bmad style coordinates along the lattice
+    if not canonical:
+        for required in ("x", "y", "z"):
+            if required not in idx:
+                raise TrackError(f"{path}: could not identify column '{required}'")
 
-    tr = _new_track()
     cols = {n: [] for n in idx}
     for row in rows:
         if len(row) < ncol:
             continue
         for n, i in idx.items():
             cols[n].append(float(row[i]))
-    npts = len(cols["x"])
+    npts = len(cols["s" if canonical else "x"])
     if npts == 0:
         raise TrackError(f"{path}: no usable rows")
+    if canonical:
+        return _canonical_track(cols, npts)
 
+    tr = _new_track()
     tr["x"], tr["y"], tr["z"] = cols["x"], cols["y"], cols["z"]
     if "pdgid" in cols:
         tr["pdgid"] = int(cols["pdgid"][0])

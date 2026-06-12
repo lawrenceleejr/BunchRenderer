@@ -161,6 +161,16 @@ brackets ignored; `x'`/`xp` divergences in mrad also accepted). Headerless
 files are read positionally as `x y z [px py pz] [t]`. Missing momenta are
 inferred from the flight direction; missing times from path length.
 
+**Canonical-coordinate CSVs** (MAD-X / Bmad style, detected by an `s`
+column): `s, x, px, y, py, z, delta` with lengths in meters, `px`/`py`
+normalized to the reference momentum, `z` the longitudinal offset from the
+reference particle and `delta` = Δp/p₀. The lab position becomes `s + z`,
+momenta stay in units of p₀ (slopes are unit-independent; the Pz axis then
+reads ≈ 1+δ), and the animation clock follows `s`. Repeated rows at the same
+`s` (thin elements, markers) are dropped automatically. For long lattices,
+raise `--time-samples` (and `--frames`) to resolve betatron oscillations
+smoothly.
+
 **Single-plane beam files** (one row per particle): each particle is
 ballistically drifted `--drift-length` mm along its momentum so there is still
 motion to animate.
