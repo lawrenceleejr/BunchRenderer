@@ -902,8 +902,12 @@ class Builder:
         no motion blur, no lighting."""
         ov = bpy.data.scenes.new(f"OV_{label}")
         ov.render.engine = "CYCLES"
-        ov.cycles.samples = 4
+        # Text edges are resolved by anti-aliasing samples; too few makes the
+        # glyph outlines noisy ("hairy"). The layer is mostly empty, so with
+        # adaptive sampling this stays cheap.
+        ov.cycles.samples = 64
         try:
+            ov.cycles.use_adaptive_sampling = True
             ov.cycles.use_denoising = False
         except AttributeError:
             pass
