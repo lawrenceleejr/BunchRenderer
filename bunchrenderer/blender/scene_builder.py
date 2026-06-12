@@ -1006,8 +1006,10 @@ class Builder:
         if not self.with_hud:
             return
 
-        depth, px, half = 3.0, 1.02, 0.17
-        ys = (0.50, 0.02, -0.46)
+        # Panel column layout: pitch leaves clear air between each panel's
+        # caption and the frame of the panel below it.
+        depth, px, half, margin = 3.0, 1.02, 0.14, 0.04
+        ys = (0.48, 0.0, -0.48)
         short = [label.split(" [")[0] for _, label in axes]
         for pi, (ia, ib) in enumerate(((0, 1), (0, 2), (1, 2))):
             pos = (px, ys[pi], -depth)
@@ -1037,18 +1039,18 @@ class Builder:
                 except AttributeError:
                     pass
                 panel_objs += [cloud, hull]
-            frame = make_frame_rect(f"{vid}_hud{pi}_frame", half + 0.045,
-                                    half + 0.045, 0.0035, self.mats["hud_frame"])
+            frame = make_frame_rect(f"{vid}_hud{pi}_frame", half + margin,
+                                    half + margin, 0.0035, self.mats["hud_frame"])
             link(frame)
             frame.parent = cam
             frame.location = pos
             back = make_plane(f"{vid}_hud{pi}_back", (0, 0, 0),
-                              2 * (half + 0.045), self.mats["hud_backdrop"])
+                              2 * (half + margin), self.mats["hud_backdrop"])
             back.parent = cam
             back.location = (px, ys[pi], -depth - 0.015)
             self.add_hud_text(
                 vid, f"{vid}_hud{pi}_cap", f"{short[ia]} – {short[ib]}",
-                0.052, px, ys[pi] - half - 0.075, depth)
+                0.05, px, ys[pi] - half - margin - 0.055, depth)
             for obj in panel_objs + [frame, back]:
                 overlay_only(obj)
                 move_to_collection(obj, col)
