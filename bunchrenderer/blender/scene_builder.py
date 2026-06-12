@@ -1301,6 +1301,25 @@ class Builder:
         present = [w for w in wanted if w in self.cameras]
         print(f"[scene_builder] render plan: {len(present)} camera(s) x "
               f"{scene.frame_end - scene.frame_start + 1} frames", flush=True)
+
+        # Per-frame marker for the CLI progress bar: Blender's own console
+        # output is block-buffered through a pipe and its format varies
+        # between versions, so we emit our own flushed line per written frame.
+        def _frame_written(*_args):
+            print(f"[scene_builder] frame-done {scene.frame_current}",
+                  flush=True)
+
+        bpy.app.handlers.render_write.append(_frame_written)
+        try:
+            self._render_cameras(scene, wanted, rdir)
+        finally:
+            try:
+                bpy.app.handlers.render_write.remove(_frame_written)
+            except ValueError:
+                pass
+        print(f"[scene_builder] renders written to {rdir}", flush=True)
+
+    def _render_cameras(self, scene, wanted, rdir):
         for label in wanted:
             cam = self.cameras.get(label)
             if cam is None:
@@ -1327,7 +1346,6 @@ class Builder:
                   f"({scene.frame_start}-{scene.frame_end}) -> "
                   f"{scene.render.filepath}...", flush=True)
             bpy.ops.render.render(animation=True)
-        print(f"[scene_builder] renders written to {rdir}")
 
     def run(self):
         load_fonts()

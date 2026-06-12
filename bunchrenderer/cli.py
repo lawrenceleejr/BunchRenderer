@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -230,13 +231,16 @@ def _fmt_dur(seconds):
 
 class _ProgressReporter:
     """Parses Blender's output into a progress bar with ETA, teeing the raw
-    log to a file. Works with both Blender 4.x ('Fra:', 'Append frame') and
-    5.x ('cat | Saved: ...') console formats."""
+    log to a file. Frames are counted via the scene builder's own flushed
+    '[scene_builder] frame-done' markers (Blender's native per-frame lines
+    are block-buffered through a pipe and format-dependent; they are kept
+    only as a fallback). A heartbeat thread keeps elapsed/ETA ticking even
+    while a slow frame renders."""
 
     RE_PLAN = re.compile(r"\[scene_builder\] render plan: (\d+) camera\(s\) x (\d+) frames")
     RE_CAM = re.compile(r"\[scene_builder\] rendering camera '([^']+)'")
+    RE_MARK = re.compile(r"\[scene_builder\] frame-done \d")
     RE_DONE = re.compile(r"Saved: '|Append frame \d")
-    RE_FRA = re.compile(r"\bFra:(\d+)")
     BAR_W = 26
 
     def __init__(self, log_path, verbose):
@@ -250,9 +254,21 @@ class _ProgressReporter:
         self.cam_label = ""
         self.recent = deque(maxlen=48)  # timestamps of recent frame completions
         self.last_draw = 0.0
+        self.last_done_printed = -1
         self.tail = deque(maxlen=30)
         self.bar_active = False
         self.build_announced = False
+        self.use_marker = False  # builder markers seen; ignore legacy lines
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._ticker = threading.Thread(target=self._tick, daemon=True)
+        self._ticker.start()
+
+    def _tick(self):
+        while not self._stop.wait(1.0):
+            with self._lock:
+                if self.total and not self.verbose:
+                    self._progress(heartbeat=True)
 
     def _emit(self, text):
         if self.bar_active:
@@ -262,6 +278,10 @@ class _ProgressReporter:
         sys.stdout.flush()
 
     def feed(self, line):
+        with self._lock:
+            self._feed(line)
+
+    def _feed(self, line):
         self.log.write(line)
         s = line.strip()
         if s:
@@ -287,10 +307,13 @@ class _ProgressReporter:
                 self._emit(s)
             self._progress()
             return
+        if self.RE_MARK.search(s):
+            self.use_marker = True
+            self._count_frame()
+            return
         if self.RE_DONE.search(s):
-            self.done += 1
-            self.recent.append(time.monotonic())
-            self._progress()
+            if not self.use_marker:  # fallback for older scene_builder copies
+                self._count_frame()
             return
         if self.verbose:
             return
@@ -304,6 +327,11 @@ class _ProgressReporter:
                 or s.startswith("Error:")):
             self._emit(s)
 
+    def _count_frame(self):
+        self.done = min(self.done + 1, self.total or self.done + 1)
+        self.recent.append(time.monotonic())
+        self._progress()
+
     def _eta(self):
         now = time.monotonic()
         if len(self.recent) >= 2:
@@ -315,7 +343,7 @@ class _ProgressReporter:
         remaining = (self.total - self.done) / max(rate, 1e-9)
         return remaining, (now - self.t0) + remaining
 
-    def _progress(self):
+    def _progress(self, heartbeat=False):
         if self.verbose or not self.total:
             return
         now = time.monotonic()
@@ -336,11 +364,16 @@ class _ProgressReporter:
             sys.stdout.flush()
             self.bar_active = True
         else:
-            # No TTY: a plain line every ~5% / 60 s, suitable for log files.
+            # No TTY: a plain line every ~5%, plus a 60 s heartbeat.
             step = max(1, self.total // 20)
-            if self.done % step and now - self.last_draw < 60:
+            fresh = self.done != self.last_done_printed and self.done % step == 0
+            stale = now - self.last_draw >= 60
+            if not fresh and not stale:
+                return
+            if heartbeat and not stale:
                 return
             self.last_draw = now
+            self.last_done_printed = self.done
             remaining, total_est = self._eta()
             print(f"[bunchrender] {self.done / self.total * 100:5.1f}% "
                   f"({self.done}/{self.total} frames, cam {self.cam_idx}/"
@@ -349,10 +382,12 @@ class _ProgressReporter:
                   f"total ~{_fmt_dur(total_est)}", flush=True)
 
     def finish(self, rc):
-        if self.bar_active:
-            sys.stdout.write("\n")
-            self.bar_active = False
-        self.log.close()
+        self._stop.set()
+        with self._lock:
+            if self.bar_active:
+                sys.stdout.write("\n")
+                self.bar_active = False
+            self.log.close()
         now = time.monotonic()
         if rc != 0 and not self.verbose:
             print("[bunchrender] Blender failed; last output lines:")
