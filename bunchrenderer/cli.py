@@ -78,8 +78,9 @@ def build_parser():
     rd.add_argument("--cameras", default="all",
                     help="comma-separated cameras to render: "
                          + ",".join(CAMERA_IDS) + " or 'all'")
-    rd.add_argument("--format", choices=("mp4", "png"), default="mp4",
-                    help="rendered output format")
+    rd.add_argument("--format", choices=("mp4", "png", "both"), default="mp4",
+                    help="rendered output: 'mp4' (one movie per camera), 'png' "
+                         "(frame folders), or 'both' in a single render pass")
     rd.add_argument("--gpu", action="store_true",
                     help="render on the GPU (Metal/CUDA/OptiX/HIP/oneAPI; "
                          "best with --local — Docker needs a GPU runtime)")
@@ -209,7 +210,7 @@ def _resample_beams(args, track_sets, labels):
         beams.append({"label": label,
                       "n_particles": b["meta"]["n_particles"],
                       "pdgid": b["meta"]["pdgid"],
-                      "pos": b["pos"], "mom": b["mom"]})
+                      "pos": b["pos"], "mom": b["mom"], "span": b["span"]})
     return {
         "meta": {
             "n_beams": len(beams),

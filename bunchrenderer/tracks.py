@@ -355,12 +355,31 @@ def time_range(tracks):
             max(tr["t"][-1] for tr in tracks))
 
 
+def _propagation_end_time(tr):
+    """Time at which a track stops propagating: the timestamp of its last
+    point that still moves. A particle that is lost/absorbed (its track ends)
+    or whose trailing rows repeat the same position stops contributing after
+    this time."""
+    eps2 = 1e-8  # mm^2; frozen/clamped rows are bit-identical -> distance 0
+    i = len(tr["t"]) - 1
+    while i > 0:
+        dx = tr["x"][i] - tr["x"][i - 1]
+        dy = tr["y"][i] - tr["y"][i - 1]
+        dz = tr["z"][i] - tr["z"][i - 1]
+        if dx * dx + dy * dy + dz * dz > eps2:
+            break
+        i -= 1
+    return tr["t"][i]
+
+
 def resample(tracks, n_samples=100, max_particles=300, t_range=None):
     """Resample all tracks onto a common, uniform time grid.
 
     Returns a JSON-serializable bundle:
-    ``times`` [S], ``pos`` [S][N][3] (mm), ``mom`` [S][N][3] (MeV/c).
-    Tracks are clamped to their first/last point outside their own time span.
+    ``times`` [S], ``pos`` [S][N][3] (mm), ``mom`` [S][N][3] (MeV/c), and
+    ``span`` [N] of ``[s_start, s_stop]`` sample indices over which each
+    particle is still propagating (outside this range it is frozen/lost and
+    should be excluded from the convex hull).
     ``t_range`` overrides the grid span (used to put several beams on one
     shared clock).
     """
@@ -372,10 +391,12 @@ def resample(tracks, n_samples=100, max_particles=300, t_range=None):
     if t1 <= t0:
         raise TrackError("track data has zero time span; cannot animate")
     times = [t0 + (t1 - t0) * s / (n_samples - 1) for s in range(n_samples)]
+    tol = 0.5 * (t1 - t0) / (n_samples - 1)  # half a sample, anti-flicker
 
     n = len(tracks)
     pos = [[None] * n for _ in range(n_samples)]
     mom = [[None] * n for _ in range(n_samples)]
+    span = []
     for i, tr in enumerate(tracks):
         tt = tr["t"]
         j = 0
@@ -389,6 +410,11 @@ def resample(tracks, n_samples=100, max_particles=300, t_range=None):
                          for k in ("x", "y", "z")]
             mom[s][i] = [round(tr[k][j] + f * (tr[k][j + 1] - tr[k][j]), 6)
                          for k in ("px", "py", "pz")]
+        t_begin, t_stop = tt[0], _propagation_end_time(tr)
+        s_start = next((s for s, t in enumerate(times) if t >= t_begin - tol), 0)
+        s_stop = next((s for s in range(n_samples - 1, -1, -1)
+                       if times[s] <= t_stop + tol), n_samples - 1)
+        span.append([s_start, max(s_start, s_stop)])
 
     return {
         "meta": {
@@ -402,4 +428,5 @@ def resample(tracks, n_samples=100, max_particles=300, t_range=None):
         "times": [round(t, 5) for t in times],
         "pos": pos,
         "mom": mom,
+        "span": span,
     }

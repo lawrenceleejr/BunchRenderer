@@ -76,7 +76,7 @@ def parse_args():
     p.add_argument("--fade-out", type=float, default=1.5)
     p.add_argument("--render", action="store_true")
     p.add_argument("--render-dir", default="renders")
-    p.add_argument("--format", choices=("mp4", "png"), default="mp4")
+    p.add_argument("--format", choices=("mp4", "png", "both"), default="mp4")
     return p.parse_args(argv)
 
 
@@ -239,17 +239,47 @@ def make_cloud(name, coords, sample_frames):
     return obj
 
 
+def hull_source_coords(coords, spans):
+    """Per-sample coords for the convex hull where particles that have stopped
+    propagating are collapsed onto the centroid of the still-active particles,
+    so they sit inside the hull and no longer inflate it. The visible point
+    cloud keeps the real positions."""
+    S, N = len(coords), len(coords[0])
+    out = []
+    for s in range(S):
+        act = [i for i in range(N) if spans[i][0] <= s <= spans[i][1]]
+        if act:
+            cx = sum(coords[s][i][0] for i in act) / len(act)
+            cy = sum(coords[s][i][1] for i in act) / len(act)
+            cz = sum(coords[s][i][2] for i in act) / len(act)
+            c, aset = (cx, cy, cz), set(act)
+            out.append([coords[s][i] if i in aset else c for i in range(N)])
+        else:
+            out.append([coords[s][0]] * N)
+    return out
+
+
 def make_view_objects(name, coords, sample_frames, center, radius,
-                      particle_mat, hull_mat, with_hull):
-    """Particle cloud + optional convex-hull envelope sharing one animated mesh."""
+                      particle_mat, hull_mat, with_hull, spans=None):
+    """Particle cloud + optional convex-hull envelope. The point cloud always
+    shows every particle's real position; the hull is built from a separate
+    mesh that drops particles which have stopped propagating (see
+    hull_source_coords) when per-particle ``spans`` are supplied."""
     cloud = make_cloud(f"{name}_particles", coords, sample_frames)
     cloud.location = center
     mod = cloud.modifiers.new("Points", "NODES")
     mod.node_group = points_node_group(f"{name}_points", radius, particle_mat)
     objs = [cloud]
     if with_hull:
-        hull = bpy.data.objects.new(f"{name}_hull", cloud.data)
-        link(hull)
+        n_last = len(coords) - 1
+        all_full = spans is None or all(s[0] <= 0 and s[1] >= n_last
+                                        for s in spans)
+        if all_full:
+            hull = bpy.data.objects.new(f"{name}_hull", cloud.data)
+            link(hull)
+        else:
+            hull = make_cloud(f"{name}_hull",
+                              hull_source_coords(coords, spans), sample_frames)
         hull.location = center
         hmod = hull.modifiers.new("Hull", "NODES")
         hmod.node_group = hull_node_group(f"{name}_hullgn", hull_mat)
@@ -801,14 +831,17 @@ class Builder:
                     (p[2] - zmin) * s_long,
                     height + (p[1] - cy0) * s_trans)
 
-        # Camera rig: an empty dollies *straight* down the beamline -- it
-        # advances only longitudinally, with its transverse position pinned to
-        # the corridor center -- and the camera is parented to it and tracks
-        # it. The beam's transverse motion then shows as the bunch moving
-        # around within the frame; the camera itself never corkscrews. Motion
-        # blur still comes for free from the forward dolly.
-        cpath = [Vector(to_world(c)) for c in cents]
-        tpath = [Vector((0.0, c.y, height)) for c in cpath]
+        # Camera rig: an empty dollies *straight* down the beamline, keeping
+        # pace with the leading particle (the one furthest along z), with its
+        # transverse position pinned to the corridor center. The camera is
+        # parented to it and tracks it, so the beam's transverse motion shows
+        # as the bunch moving within the frame and the camera never corkscrews.
+        # Motion blur still comes for free from the forward dolly.
+        lead_y = []
+        for s in range(S):
+            zmax_s = max(p[2] for beam in self.beams for p in beam["pos"][s])
+            lead_y.append((zmax_s - zmin) * s_long)
+        tpath = [Vector((0.0, lead_y[s], height)) for s in range(S)]
         target = make_empty("BeamTarget", tpath[0])
         for s, frame in enumerate(self.sample_frames):
             target.location = tpath[s]
@@ -834,8 +867,9 @@ class Builder:
             coords = [[to_world(p) for p in row] for row in beam["pos"]]
             objs = make_view_objects(
                 f"beam_b{b}", coords, self.sample_frames, (0, 0, 0),
-                radius=0.045, particle_mat=self.mats[f"particle{b}"],
-                hull_mat=self.mats[f"hull{b}"], with_hull=self.with_hull)
+                radius=0.01125, particle_mat=self.mats[f"particle{b}"],
+                hull_mat=self.mats[f"hull{b}"], with_hull=self.with_hull,
+                spans=beam["span"])
             for obj in objs:
                 move_to_collection(obj, bcol)
 
@@ -1039,6 +1073,7 @@ class Builder:
             scale = half * 0.95 / STATION_HALF
             panel_objs = []
             for b, coords in enumerate(beam_coords):
+                spans = self.beams[b]["span"]
                 pcoords = [[(v[ia] * scale, v[ib] * scale, 0.0) for v in row]
                            for row in coords]
                 cloud = make_cloud(f"{vid}_hud{pi}_b{b}", pcoords,
@@ -1047,11 +1082,17 @@ class Builder:
                 cloud.location = pos
                 mod = cloud.modifiers.new("Points", "NODES")
                 mod.node_group = points_node_group(
-                    f"{vid}_hud{pi}_b{b}_pts", 0.0065,
+                    f"{vid}_hud{pi}_b{b}_pts", 0.0016,
                     self.mats[f"hud_particle{b}"])
-                hull = bpy.data.objects.new(f"{vid}_hud{pi}_b{b}_hull",
-                                            cloud.data)
-                link(hull)
+                n_last = len(pcoords) - 1
+                if all(s[0] <= 0 and s[1] >= n_last for s in spans):
+                    hull = bpy.data.objects.new(f"{vid}_hud{pi}_b{b}_hull",
+                                                cloud.data)
+                    link(hull)
+                else:
+                    hull = make_cloud(f"{vid}_hud{pi}_b{b}_hull",
+                                      hull_source_coords(pcoords, spans),
+                                      self.sample_frames)
                 hull.parent = cam
                 hull.location = pos
                 hmod = hull.modifiers.new("Hull", "NODES")
@@ -1197,8 +1238,9 @@ class Builder:
             beam_coords.append(coords)
             objs = make_view_objects(
                 f"{vid}_b{b}", coords, self.sample_frames, center,
-                radius=0.034, particle_mat=self.mats[f"particle{b}"],
-                hull_mat=self.mats[f"hull{b}"], with_hull=self.with_hull)
+                radius=0.0085, particle_mat=self.mats[f"particle{b}"],
+                hull_mat=self.mats[f"hull{b}"], with_hull=self.with_hull,
+                spans=self.beams[b]["span"])
             for obj in objs:
                 move_to_collection(obj, self.beam_collection(b))
 
@@ -1374,7 +1416,55 @@ class Builder:
                 pass
         print(f"[scene_builder] renders written to {rdir}", flush=True)
 
+    def _set_ffmpeg_output(self, scene, filepath):
+        ims = scene.render.image_settings
+        if hasattr(ims, "media_type"):  # Blender >= 5.0
+            ims.media_type = "VIDEO"
+        ims.file_format = "FFMPEG"
+        scene.render.ffmpeg.format = "MPEG4"
+        scene.render.ffmpeg.codec = "H264"
+        scene.render.ffmpeg.constant_rate_factor = "HIGH"
+        scene.render.ffmpeg.audio_codec = "NONE"
+        scene.render.filepath = filepath
+
+    def _encode_pngs_to_mp4(self, frames_dir, prefix, out_filepath):
+        """Encode an already-rendered PNG sequence to an MP4 with Blender's
+        sequencer -- no Cycles, so 'both' stays a single render pass. Used
+        because the compositor File Output node's API is too version-specific."""
+        frames = sorted(f for f in os.listdir(frames_dir)
+                        if f.startswith(prefix) and f.endswith(".png"))
+        if not frames:
+            print("[scene_builder] no PNG frames to encode; skipping MP4")
+            return
+        scene = bpy.context.scene
+        enc = bpy.data.scenes.new("BunchEncode")
+        enc.frame_start, enc.frame_end = 1, len(frames)
+        enc.render.fps = self.args.fps
+        enc.render.resolution_x = scene.render.resolution_x
+        enc.render.resolution_y = scene.render.resolution_y
+        enc.render.use_sequencer = True
+        enc.render.use_compositing = False
+        self._set_ffmpeg_output(enc, out_filepath)
+        se = enc.sequence_editor_create()
+        coll = se.strips if hasattr(se, "strips") else se.sequences
+        strip = coll.new_image(name="seq", channel=1, frame_start=1,
+                               filepath=os.path.join(frames_dir, frames[0]))
+        for f in frames[1:]:
+            strip.elements.append(f)
+        # Suspend the per-frame progress markers so the cheap encode pass
+        # doesn't inflate the CLI progress bar's frame count.
+        saved = list(bpy.app.handlers.render_write)
+        bpy.app.handlers.render_write.clear()
+        try:
+            with bpy.context.temp_override(scene=enc):
+                bpy.ops.render.render(animation=True)
+        finally:
+            bpy.app.handlers.render_write.extend(saved)
+            bpy.data.scenes.remove(enc)
+
     def _render_cameras(self, scene, wanted, rdir):
+        fmt = self.args.format
+        ims = scene.render.image_settings
         for label in wanted:
             cam = self.cameras.get(label)
             if cam is None:
@@ -1382,17 +1472,9 @@ class Builder:
                 continue
             scene.camera = cam
             self.set_active_hud(label)
-            ims = scene.render.image_settings
-            if self.args.format == "mp4":
-                if hasattr(ims, "media_type"):  # Blender >= 5.0
-                    ims.media_type = "VIDEO"
-                ims.file_format = "FFMPEG"
-                scene.render.ffmpeg.format = "MPEG4"
-                scene.render.ffmpeg.codec = "H264"
-                scene.render.ffmpeg.constant_rate_factor = "HIGH"
-                scene.render.ffmpeg.audio_codec = "NONE"
-                scene.render.filepath = os.path.join(rdir, f"{label}_")
-            else:
+            if fmt == "mp4":
+                self._set_ffmpeg_output(scene, os.path.join(rdir, f"{label}_"))
+            else:  # png or both -> render the PNG sequence first
                 if hasattr(ims, "media_type"):
                     ims.media_type = "IMAGE"
                 ims.file_format = "PNG"
@@ -1401,6 +1483,12 @@ class Builder:
                   f"({scene.frame_start}-{scene.frame_end}) -> "
                   f"{scene.render.filepath}...", flush=True)
             bpy.ops.render.render(animation=True)
+            if fmt == "both":
+                mp4 = os.path.join(rdir, f"{label}_"
+                                   f"{scene.frame_start:04d}-{scene.frame_end:04d}.mp4")
+                print(f"[scene_builder] encoding '{label}' frames -> {mp4}",
+                      flush=True)
+                self._encode_pngs_to_mp4(os.path.join(rdir, label), "frame_", mp4)
 
     def run(self):
         load_fonts()

@@ -7,10 +7,11 @@ Feed it one or more [g4beamline](http://g4beamline.muonsinc.com) track files
 renders movies — containing:
 
 * **Real-space beam flight** — the bunch traveling through 3D space, chased by
-  a camera with motion blur and depth of field, a ruler showing real `z`
+  a camera (motion blur + depth of field) that dollies straight down the
+  beamline keeping pace with the leading particle, a ruler showing real `z`
   positions, an axis tripod riding alongside the bunch, and (optionally) the
-  **beamline geometry superimposed Tron-style**: low-opacity ghost solids with
-  brighter emissive wireframes, read directly from g4beamline's VRML export.
+  **beamline geometry superimposed**: faint additive ghost solids with thin
+  emissive wireframes, read directly from g4beamline's VRML export.
 * **3D projections of the 4D transverse phase space** — all four 3-subsets of
   `(x, x′, y, y′)`, plus the longitudinal projections `(Δz, Pz, x)` and
   `(Δz, Pz, y)`, each on its own lit pedestal with a slowly orbiting camera.
@@ -23,6 +24,9 @@ renders movies — containing:
 * **Convex-hull envelopes** — every view (and every HUD panel) wraps the
   ensemble in a soft-metallic convex hull recomputed *every frame*, so you
   watch the beam envelope rotate, shear and breathe as the bunch propagates.
+  Particles that have stopped propagating (lost/absorbed — their track ends
+  or their position freezes) drop out of the hull so a few stragglers don't
+  bloat the envelope, while still showing as points where they stopped.
 * **Multi-beam comparison** — pass several track files and each becomes its
   own color-coded beam (amber, cyan, green, magenta) rendered into the *same*
   views: every 3D projection shows all the blobs on shared axes, every camera
@@ -84,8 +88,9 @@ folder and keep refreshing the newest file. With the **default `--format
 mp4` there are no per-frame PNGs**: each camera produces a single
 `<render-dir>/<camera>_0001-NNNN.mp4` that grows during rendering and is
 only playable once that camera finishes (so finished cameras are watchable
-while later ones still render). Pass `--format png` if you want the
-individual frames.
+while later ones still render). `--format png` gives the individual frames;
+`--format both` writes the PNG frames *and* the MP4 (the MP4 is encoded from
+the frames with no extra Cycles render, so it costs the same as `png`).
 
 By default each run overwrites the previous `.blend`, `.log` and render
 directory. Pass `--timestamp` to suffix all three with `_YYYYmmdd-HHMMSS`
@@ -284,7 +289,7 @@ bunchrender INPUT [INPUT2 ...] [-o out.blend]
   --render-dir DIR        render output location (default <output>_renders)
   --timestamp             suffix .blend/.log/renders with a run timestamp
   --cameras LIST          cameras to render (default all)
-  --format mp4|png        movie per camera, or PNG frame folders
+  --format mp4|png|both   movie per camera, PNG frame folders, or both
   --gpu                   render on the GPU (Metal/CUDA/OptiX/HIP/oneAPI)
   --views LIST            which views to build (default all)
   --elements FILE         beamline geometry: g4bl VRML (.wrl) or CSV
