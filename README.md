@@ -103,9 +103,13 @@ while later ones still render). `--format png` gives the individual frames;
 `--format both` writes the PNG frames *and* the MP4 (the MP4 is encoded from
 the frames with no extra Cycles render, so it costs the same as `png`).
 
-By default each run overwrites the previous `.blend`, `.log` and render
-directory. Pass `--timestamp` to suffix all three with `_YYYYmmdd-HHMMSS`
-so successive runs are kept side by side.
+By default nothing is overwritten: each run tags the `.blend`, `.log`, render
+directory **and every MP4 filename** with `_<YYYYmmdd-HHMMSS>_<githash>` (the
+short commit hash of the bunchrenderer source, plus `-dirty` if it has
+uncommitted edits), so successive runs sit side by side and each movie is
+self-identifying even moved out of its folder. Pass `--no-timestamp` for
+stable, clobbering names (e.g. `beam_0001-0240.mp4`) — handy when iterating
+and watching a fixed path.
 
 The terminal shows a live progress bar with frame counts, per-camera
 position, elapsed time, ETA and the estimated total:
@@ -299,7 +303,8 @@ bunchrender INPUT [INPUT2 ...] [-o out.blend]
   --docker-image IMAGE    alternative Docker image with `blender` on PATH
   --render                headless mode: render the animation after building
   --render-dir DIR        render output location (default <output>_renders)
-  --timestamp             suffix .blend/.log/renders with a run timestamp
+  --timestamp/--no-timestamp  tag outputs (incl. MP4 names) with run
+                          timestamp+commit hash so nothing clobbers (default on)
   --cameras LIST          cameras to render (default all)
   --format mp4|png|both   movie per camera, PNG frame folders, or both
   --gpu                   render on the GPU (Metal/CUDA/OptiX/HIP/oneAPI)

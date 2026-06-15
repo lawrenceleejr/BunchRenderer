@@ -73,10 +73,12 @@ def build_parser():
                          "scene (default: only produce the .blend file)")
     rd.add_argument("--render-dir", default=None, metavar="DIR",
                     help="where to put rendered output (default: <output stem>_renders)")
-    rd.add_argument("--timestamp", action="store_true",
-                    help="append a _YYYYmmdd-HHMMSS suffix to the .blend, .log "
-                         "and render directory so each run is kept separately "
-                         "instead of overwriting the previous output")
+    rd.add_argument("--timestamp", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="tag the .blend, .log, render directory and each MP4 "
+                         "filename with a run timestamp and short git commit "
+                         "hash, so nothing is ever overwritten (on by default; "
+                         "use --no-timestamp for stable, clobbering names)")
     rd.add_argument("--cameras", default=None,
                     help="comma-separated cameras to render: "
                          + ",".join(CAMERA_IDS) + " or 'all' (default: all)")
@@ -170,7 +172,7 @@ def _builder_args(args, data_path, blend_path, render_dir):
            "--fade-out", str(args.fade_out),
            "--samples", str(args.samples), "--resolution", args.resolution,
            "--views", args.views, "--cameras", args.cameras,
-           "--trails", str(args.trails),
+           "--trails", str(args.trails), "--tag", args.tag,
            "--format", args.format, "--render-dir", str(render_dir)]
     if args.no_hull:
         out.append("--no-hull")
@@ -294,6 +296,25 @@ def _load_elements(args):
         bundle["items"] = kept
         print(f"[bunchrender] elements: {len(kept)} element(s) from CSV")
     return bundle
+
+
+def _git_short_hash():
+    """Short git commit hash of the bunchrenderer source (with a -dirty
+    marker for uncommitted changes), or '' when not in a git checkout."""
+    pkg = str(_pkg_path())
+    try:
+        h = subprocess.run(["git", "-C", pkg, "rev-parse", "--short", "HEAD"],
+                           capture_output=True, text=True, timeout=5)
+        if h.returncode != 0:
+            return ""
+        rev = h.stdout.strip()
+        dirty = subprocess.run(["git", "-C", pkg, "status", "--porcelain"],
+                               capture_output=True, text=True, timeout=5)
+        if dirty.returncode == 0 and dirty.stdout.strip():
+            rev += "-dirty"
+        return rev
+    except (OSError, subprocess.SubprocessError):
+        return ""
 
 
 def _fmt_dur(seconds):
@@ -598,16 +619,23 @@ def main(argv=None):
     if out_path.suffix != ".blend":
         out_path = out_path.with_suffix(".blend")
     out_path = out_path.resolve()
-    # Optionally tag every artifact with a run timestamp so successive runs
-    # are kept side by side instead of overwriting each other.
-    stamp = time.strftime("_%Y%m%d-%H%M%S") if args.timestamp else ""
-    if stamp:
-        out_path = out_path.with_name(out_path.stem + stamp + ".blend")
+    # By default tag every artifact (.blend, .log, render dir AND each MP4
+    # filename) with a run timestamp + short git commit hash, so nothing is
+    # ever overwritten and each movie is self-identifying. --no-timestamp
+    # reverts to stable, clobbering names.
+    args.tag = ""
+    if args.timestamp:
+        args.tag = time.strftime("%Y%m%d-%H%M%S")
+        h = _git_short_hash()
+        if h:
+            args.tag += "_" + h
+        out_path = out_path.with_name(f"{out_path.stem}_{args.tag}.blend")
+        print(f"[bunchrender] run tag: {args.tag}")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if args.render_dir:
         render_dir = Path(args.render_dir).resolve()
-        if stamp:
-            render_dir = render_dir.with_name(render_dir.name + stamp)
+        if args.tag:
+            render_dir = render_dir.with_name(f"{render_dir.name}_{args.tag}")
     else:
         render_dir = out_path.with_name(out_path.stem + "_renders")
 

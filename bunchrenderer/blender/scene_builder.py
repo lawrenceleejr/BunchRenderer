@@ -79,6 +79,7 @@ def parse_args():
     p.add_argument("--fade-out", type=float, default=1.5)
     p.add_argument("--render", action="store_true")
     p.add_argument("--render-dir", default="renders")
+    p.add_argument("--tag", default="")  # run timestamp/hash for MP4 filenames
     p.add_argument("--format", choices=("mp4", "png", "both"), default="mp4")
     return p.parse_args(argv)
 
@@ -1641,8 +1642,11 @@ class Builder:
             scene.camera = cam
             self.set_active_hud(label)
             self._clean_camera_outputs(rdir, label, fmt)
+            # MP4 filename carries the run tag (timestamp + commit hash) so the
+            # movie is self-identifying even moved out of its folder.
+            tag = f"{self.args.tag}_" if self.args.tag else ""
             if fmt == "mp4":
-                self._set_ffmpeg_output(scene, os.path.join(rdir, f"{label}_"))
+                self._set_ffmpeg_output(scene, os.path.join(rdir, f"{label}_{tag}"))
             else:  # png or both -> render the PNG sequence first
                 if hasattr(ims, "media_type"):
                     ims.media_type = "IMAGE"
@@ -1654,7 +1658,7 @@ class Builder:
             bpy.ops.render.render(animation=True)
             if fmt == "both":
                 n = scene.frame_end - scene.frame_start + 1
-                mp4 = os.path.join(rdir, f"{label}_"
+                mp4 = os.path.join(rdir, f"{label}_{tag}"
                                    f"{scene.frame_start:04d}-{scene.frame_end:04d}.mp4")
                 print(f"[scene_builder] encode-start {label} {n}", flush=True)
                 self._encode_pngs_to_mp4(os.path.join(rdir, label), "frame_", mp4)
