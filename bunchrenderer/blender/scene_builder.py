@@ -1088,7 +1088,9 @@ class Builder:
         # Text edges are resolved by anti-aliasing samples; too few makes the
         # glyph outlines noisy ("hairy"). The layer is mostly empty, so with
         # adaptive sampling this stays cheap.
-        ov.cycles.samples = 64
+        # The overlay renders every frame; tie its AA samples to the main
+        # render so a low-quality draft doesn't pay full price for the text.
+        ov.cycles.samples = min(64, max(16, self.args.samples))
         try:
             ov.cycles.use_adaptive_sampling = True
             ov.cycles.use_denoising = False
