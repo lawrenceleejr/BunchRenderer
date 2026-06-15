@@ -89,10 +89,12 @@ def build_parser():
                     help="render on the GPU (Metal/CUDA/OptiX/HIP/oneAPI; "
                          "best with --local — Docker needs a GPU runtime)")
     rd.add_argument("--lq", action="store_true",
-                    help="low-quality fast draft: enables the GPU and lowers "
-                         "samples, resolution, frames and camera count for a "
-                         "quick look. Any of those flags you set explicitly "
-                         "still win.")
+                    help="quick draft preset: GPU on, 12 samples, 960x540, the "
+                         "beam camera only, 120 frames, 40 time-samples (fades "
+                         "kept). Any flag you set explicitly still wins.")
+    rd.add_argument("--llq", action="store_true",
+                    help="even lower/faster than --lq: 4 samples, 640x360, "
+                         "48 frames, 20 time-samples, no fades. Wins over --lq.")
 
     sc = p.add_argument_group("scene")
     sc.add_argument("--views", default="all",
@@ -190,20 +192,31 @@ def _builder_args(args, data_path, blend_path, render_dir):
 
 
 def _apply_quality_defaults(args):
-    """Fill in options left as None on the command line. --lq applies a fast,
-    very-low-quality draft preset; anything the user set explicitly still wins
-    (e.g. `--lq --cameras all`). Without --lq the normal defaults apply."""
-    if args.lq:
+    """Fill in options left as None on the command line. --lq (quick draft) and
+    --llq (even lower/faster) apply preset values; anything set explicitly
+    still wins (e.g. `--lq --cameras all`). --llq takes precedence over --lq."""
+    # --llq: 4 samples, 640x360, 48 frames, 20 time-samples, no fades.
+    # --lq:  12 samples, 960x540, 120 frames, 40 time-samples, fades kept.
+    if args.llq:
+        name, preset = "llq", {
+            "samples": 4, "resolution": "640x360", "cameras": "beam",
+            "frames": 48, "time_samples": 20,
+            "fade_in": 0.0, "hold": 0.0, "fade_out": 0.0}
+    elif args.lq:
+        name, preset = "lq", {
+            "samples": 12, "resolution": "960x540", "cameras": "beam",
+            "frames": 120, "time_samples": 40}
+    else:
+        name, preset = None, {}
+    if name:
         args.gpu = True
-        lq = {"samples": 4, "resolution": "640x360", "cameras": "beam",
-              "frames": 48, "time_samples": 20,
-              "fade_in": 0.0, "hold": 0.0, "fade_out": 0.0}
-        for key, val in lq.items():
+        for key, val in preset.items():
             if getattr(args, key) is None:
                 setattr(args, key, val)
-        print(f"[bunchrender] --lq draft: {args.samples} samples, "
+        fades = "no fades" if name == "llq" else "fades kept"
+        print(f"[bunchrender] --{name} draft: {args.samples} samples, "
               f"{args.resolution}, cameras={args.cameras}, {args.frames} frames, "
-              f"{args.time_samples} time-samples, no fades, GPU")
+              f"{args.time_samples} time-samples, {fades}, GPU")
     for key, val in {"samples": 64, "resolution": "1920x1080", "cameras": "all",
                      "fade_in": 0.75, "hold": 0.5, "fade_out": 1.5}.items():
         if getattr(args, key) is None:
