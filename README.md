@@ -8,10 +8,17 @@ renders movies — containing:
 
 * **Real-space beam flight** — the bunch traveling through 3D space, chased by
   a camera (motion blur + depth of field) that dollies straight down the
-  beamline keeping pace with the leading particle, a ruler showing real `z`
-  positions, an axis tripod riding alongside the bunch, and (optionally) the
-  **beamline geometry superimposed**: faint additive ghost solids with thin
-  emissive wireframes, read directly from g4beamline's VRML export.
+  beamline keeping pace with the leading particle, plus a second **axial
+  camera** (`Cam_beam_axial`) looking down the beam axis — the view that makes
+  transverse (Larmor) rotation obvious. A ruler shows real `z`, an axis tripod
+  is pinned in-frame, and (optionally) the **beamline geometry superimposed**:
+  faint additive ghost solids with thin emissive wireframes from g4beamline's
+  VRML export.
+* **Particle trails** (`--trails N`) — each particle drags a comet tail that
+  fades over its previous `N` time samples, so its swept path is drawn out.
+  This makes rotation legible even when the input is sparsely sampled in `z`
+  (the discrete positions connect into visible helices); a very large `N`
+  traces the entire history.
 * **3D projections of the 4D transverse phase space** — all four 3-subsets of
   `(x, x′, y, y′)`, plus the longitudinal projections `(Δz, Pz, x)` and
   `(Δz, Pz, y)`, each on its own lit pedestal with a slowly orbiting camera.
@@ -235,6 +242,7 @@ both.
 | id | camera | contents |
 |----|--------|----------|
 | `beam` | `Cam_beam` (follow-cam, motion blur, DoF) | bunch in real space + hull + ruler + elements |
+| `beam_axial` | `Cam_beam_axial` (down the bore) | same scene from the beam axis — shows transverse rotation |
 | `xxpy` | `Cam_xxpy` (orbiting) | 3D projection (x, x′, y) of 4D phase space |
 | `xxpyp` | `Cam_xxpyp` (orbiting) | 3D projection (x, x′, y′) of 4D phase space |
 | `xyyp` | `Cam_xyyp` (orbiting) | 3D projection (x, y, y′) of 4D phase space |
@@ -295,6 +303,7 @@ bunchrender INPUT [INPUT2 ...] [-o out.blend]
   --elements FILE         beamline geometry: g4bl VRML (.wrl) or CSV
   --elements-max-radius MM  drop shapes wider than this (default 1000)
   --no-hull               skip the convex-hull envelopes
+  --trails N              real-space comet tails fading over N samples (0=off)
   --no-hud                skip the 2D sub-projection HUD panels
   --frames N --fps N      evolution length (default: auto from input granularity)
   --max-duration SEC      cap for the auto movie length (default 180)

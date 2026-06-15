@@ -26,7 +26,9 @@ BLENDER_VERSION = "5.0.1"
 DEFAULT_IMAGE = f"bunchrenderer/blender:{BLENDER_VERSION}"
 
 VIEW_IDS = ["beam", "xxpy", "xxpyp", "xyyp", "xpyyp", "zpzx", "zpzy"]
-CAMERA_IDS = VIEW_IDS + ["overview"]
+# beam_axial is an extra camera on the real-space view (down the beam axis),
+# not a separate view, so it is selectable for --cameras but not --views.
+CAMERA_IDS = VIEW_IDS + ["beam_axial", "overview"]
 
 
 def _pkg_path(*parts):
@@ -98,6 +100,12 @@ def build_parser():
                          "half-extent (filters out world/enclosure volumes)")
     sc.add_argument("--no-hull", action="store_true",
                     help="skip the convex-hull envelope surfaces")
+    sc.add_argument("--trails", type=int, default=0, metavar="N",
+                    help="in the real-space view, trace each particle's path "
+                         "with a trail that fades over the previous N time "
+                         "samples (0 = off; a very large N traces the whole "
+                         "history). Reveals beam rotation, especially when the "
+                         "input is sparsely sampled in z")
     sc.add_argument("--no-hud", action="store_true",
                     help="skip the 2D sub-projection HUD panels on the "
                          "phase-space station cameras")
@@ -156,6 +164,7 @@ def _builder_args(args, data_path, blend_path, render_dir):
            "--fade-out", str(args.fade_out),
            "--samples", str(args.samples), "--resolution", args.resolution,
            "--views", args.views, "--cameras", args.cameras,
+           "--trails", str(args.trails),
            "--format", args.format, "--render-dir", str(render_dir)]
     if args.no_hull:
         out.append("--no-hull")

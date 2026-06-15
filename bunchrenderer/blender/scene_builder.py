@@ -69,6 +69,7 @@ def parse_args():
     p.add_argument("--views", default="all")
     p.add_argument("--cameras", default="all")
     p.add_argument("--no-hull", action="store_true")
+    p.add_argument("--trails", type=int, default=0)
     p.add_argument("--no-hud", action="store_true")
     p.add_argument("--gpu", action="store_true")
     p.add_argument("--fade-in", type=float, default=0.75)
@@ -209,6 +210,60 @@ def hull_node_group(name, material):
     ng.links.new(nin.outputs[0], hull.inputs["Geometry"])
     ng.links.new(hull.outputs["Convex Hull"], smooth.inputs["Geometry"])
     ng.links.new(smooth.outputs["Geometry"], smat.inputs["Geometry"])
+    ng.links.new(smat.outputs["Geometry"], nout.inputs[0])
+    return ng
+
+
+def trail_node_group(name, f_on, evo, window, material):
+    """Geometry nodes that reveal a curve as a comet trail synced to the
+    timeline: a Trim Curve whose [start, end] factors track the current
+    frame, so every particle path shows only its most recent ``window``
+    fraction (>=1 traces the whole history). All splines trim together, so
+    the trails stay in lock-step with the bunch."""
+    ng = bpy.data.node_groups.new(name, "GeometryNodeTree")
+    _iface_socket(ng, "Geometry", "INPUT", "NodeSocketGeometry")
+    _iface_socket(ng, "Geometry", "OUTPUT", "NodeSocketGeometry")
+    nin = ng.nodes.new("NodeGroupInput")
+    nout = ng.nodes.new("NodeGroupOutput")
+    tnode = ng.nodes.new("GeometryNodeInputSceneTime")
+
+    def math(op, a=None, b=None):
+        n = ng.nodes.new("ShaderNodeMath")
+        n.operation = op
+        if a is not None:
+            n.inputs[0].default_value = a
+        if b is not None:
+            n.inputs[1].default_value = b
+        return n
+
+    # factor = clamp((frame - f_on) / evo, 0, 1)  -> head of the trail
+    sub = math("SUBTRACT", b=float(f_on))
+    div = math("DIVIDE", b=float(max(evo, 1)))
+    end = ng.nodes.new("ShaderNodeClamp")
+    ng.links.new(tnode.outputs["Frame"], sub.inputs[0])
+    ng.links.new(sub.outputs[0], div.inputs[0])
+    ng.links.new(div.outputs[0], end.inputs["Value"])
+    # start = clamp(factor - window, 0, 1)  -> tail of the trail
+    start_sub = math("SUBTRACT", b=float(window))
+    start = ng.nodes.new("ShaderNodeClamp")
+    ng.links.new(div.outputs[0], start_sub.inputs[0])
+    ng.links.new(start_sub.outputs[0], start.inputs["Value"])
+
+    trim = ng.nodes.new("GeometryNodeTrimCurve")  # FACTOR mode by default
+    # Build the tube *inside* the node tree (the curve datablock's bevel is
+    # applied to the untrimmed curve, so it would ignore the trim).
+    circle = ng.nodes.new("GeometryNodeCurvePrimitiveCircle")
+    circle.inputs["Resolution"].default_value = 6
+    circle.inputs["Radius"].default_value = 0.006
+    c2m = ng.nodes.new("GeometryNodeCurveToMesh")
+    smat = ng.nodes.new("GeometryNodeSetMaterial")
+    smat.inputs["Material"].default_value = material
+    ng.links.new(nin.outputs[0], trim.inputs["Curve"])
+    ng.links.new(start.outputs[0], trim.inputs[2])  # Start (factor)
+    ng.links.new(end.outputs[0], trim.inputs[3])     # End (factor)
+    ng.links.new(trim.outputs["Curve"], c2m.inputs["Curve"])
+    ng.links.new(circle.outputs["Curve"], c2m.inputs["Profile Curve"])
+    ng.links.new(c2m.outputs["Mesh"], smat.inputs["Geometry"])
     ng.links.new(smat.outputs["Geometry"], nout.inputs[0])
     return ng
 
@@ -734,6 +789,9 @@ class Builder:
             self.mats[f"legend{b}"] = make_material(
                 f"BR_Legend{b}", c["particle"],
                 emission=c["particle"], emission_strength=2.0)
+            self.mats[f"trail{b}"] = make_material(
+                f"BR_Trail{b}", c["particle"],
+                emission=c["particle"], emission_strength=1.6)
         self.mats["axis"] = make_material(
             "BR_Axis", PALETTE["axis"], metallic=0.9, roughness=0.35)
         self.mats["text"] = make_material(
@@ -798,6 +856,75 @@ class Builder:
 
     # -- beam (real space) view ---------------------------------------------
 
+    def _beam_camera(self, label, target, offset, lens, title, exag, dof):
+        """A real-space camera parented to the (straight-dollying) target,
+        with its own flat overlay (title, transverse scale, z readout, beam
+        legend) and an axis tripod pinned to its lower-left."""
+        cam = make_camera(f"Cam_{label}", tuple(offset), target=target, lens=lens)
+        cam.parent = target
+        cam.location = tuple(offset)
+        if dof:
+            cam.data.dof.use_dof = True
+            cam.data.dof.focus_object = target
+            cam.data.dof.aperture_fstop = 4.0
+        self.cameras[label] = cam
+
+        # Axis tripod pinned to a fixed lower-left spot in this camera's view.
+        # The camera's world orientation is constant during the flight, so a
+        # fixed camera-relative offset keeps the gizmo framed at constant size;
+        # parenting the arrows to the rotation-free target keeps them aligned
+        # to world x/y/z.
+        axmat, txmat = self.mats["axis"], self.mats["text"]
+        cam_rot = (-offset).to_track_quat("-Z", "Y")
+        gizmo = offset + cam_rot @ Vector((-0.92, -0.52, -3.5))
+        alen = 0.45
+        make_arrow(f"{label}_ax_x", gizmo, (1, 0, 0), alen, 0.012, axmat, parent=target)
+        make_arrow(f"{label}_ax_y", gizmo, (0, 0, 1), alen, 0.012, axmat, parent=target)
+        make_arrow(f"{label}_ax_zdir", gizmo, (0, 1, 0), alen, 0.012, axmat, parent=target)
+        make_text(f"{label}_lbl_x", "x", 0.16, gizmo + Vector((alen + 0.14, 0, 0)),
+                  txmat, target=cam, parent=target)
+        make_text(f"{label}_lbl_y", "y", 0.16, gizmo + Vector((0, 0, alen + 0.14)),
+                  txmat, target=cam, parent=target)
+        make_text(f"{label}_lbl_z", "z", 0.16, gizmo + Vector((0, alen + 0.14, 0)),
+                  txmat, target=cam, parent=target)
+
+        self.hud_collection(label)
+        self.make_overlay(label, lens=float(lens))
+        self.add_hud_text(label, f"{label}_title", title, 0.15, 0.0, 0.80, 4.5,
+                          bold=True)
+        self.add_hud_text(label, f"{label}_caption", f"transverse scale ×{exag:.0f}",
+                          0.085, 0.0, 0.655, 4.5)
+        self.add_z_readout(label, label, 0.085, 0.0, 0.55, 4.5)
+        self.add_legend(label, label, -1.62, 0.82, 4.5, 0.105)
+        return cam
+
+    def _build_trails(self, b, coords):
+        """One curve per beam, holding every particle's full path as a spline;
+        a Trim Curve geometry node reveals only the most recent --trails
+        samples, synced to the timeline, so each particle drags a fading comet
+        tail. A very large --trails traces the whole history."""
+        S, N = len(coords), len(coords[0])
+        cu = bpy.data.curves.new(f"beam_b{b}_trail", "CURVE")
+        cu.dimensions = "3D"  # tube built in the node tree, not via bevel
+        for i in range(N):
+            sp = cu.splines.new("POLY")
+            sp.points.add(S - 1)
+            for s in range(S):
+                c = coords[s][i]
+                sp.points[s].co = (c[0], c[1], c[2], 1.0)
+        obj = bpy.data.objects.new(f"beam_b{b}_trail", cu)
+        link(obj)
+        window = min(1.0, self.args.trails / max(self.S - 1, 1))
+        mod = obj.modifiers.new("Trail", "NODES")
+        mod.node_group = trail_node_group(
+            f"beam_b{b}_trailgn", 1 + self.fade_in_f, self.evo_frames, window,
+            self.mats[f"trail{b}"])
+        try:
+            obj.cycles.use_deform_motion = False
+        except AttributeError:
+            pass
+        return obj
+
     def build_beam_view(self):
         S = self.S
         cents = self.centroids
@@ -855,20 +982,6 @@ class Builder:
             target.keyframe_insert("location", frame=frame)
         set_interpolation(target.animation_data, "LINEAR")
 
-        cam = make_camera("Cam_beam", (0, 0, 0), target=target, lens=46)
-        cam.parent = target
-        # Half-coverage of the base framing (lens 46, offset 10.3) is ~2.27
-        # units at the target plane; scale the offset so the farthest bunch
-        # edge stays in frame even though the camera stays on the axis.
-        dmax = (sep + spread) * s_trans
-        off = min(2.5, max(0.55, 1.2 * dmax / 2.27))
-        # Base offset chosen to stay outside typical beam-pipe ghost geometry.
-        cam.location = (-5.4 * off, -8.2 * off, 3.2 * off)
-        cam.data.dof.use_dof = True
-        cam.data.dof.focus_object = target
-        cam.data.dof.aperture_fstop = 4.0
-        self.cameras["beam"] = cam
-
         for b, beam in enumerate(self.beams):
             bcol = self.beam_collection(b)
             coords = [[to_world(p) for p in row] for row in beam["pos"]]
@@ -877,40 +990,25 @@ class Builder:
                 radius=0.01125, particle_mat=self.mats[f"particle{b}"],
                 hull_mat=self.mats[f"hull{b}"], with_hull=self.with_hull,
                 spans=beam["span"])
+            if self.args.trails > 0:
+                objs.append(self._build_trails(b, coords))
             for obj in objs:
                 move_to_collection(obj, bcol)
 
-        # Labeled axis tripod, pinned to a fixed lower-left spot in the
-        # camera's view so it is always fully framed (the camera's world
-        # orientation is constant during the flight, so placing the gizmo at a
-        # fixed camera-relative offset keeps it on-screen at constant size;
-        # parenting the arrows to the rotation-free target keeps them aligned
-        # to the world x/y/z axes).
-        axmat, txmat = self.mats["axis"], self.mats["text"]
-        cam_off = Vector((-5.4, -8.2, 3.2)) * off
-        cam_rot = (-cam_off).to_track_quat("-Z", "Y")
-        gizmo = cam_off + cam_rot @ Vector((-0.92, -0.52, -3.5))
-        alen = 0.45
-        make_arrow("beam_ax_x", gizmo, (1, 0, 0), alen, 0.012, axmat, parent=target)
-        make_arrow("beam_ax_y", gizmo, (0, 0, 1), alen, 0.012, axmat, parent=target)
-        make_arrow("beam_ax_zdir", gizmo, (0, 1, 0), alen, 0.012, axmat, parent=target)
-        make_text("beam_lbl_x", "x", 0.16, gizmo + Vector((alen + 0.14, 0, 0)),
-                  txmat, target=cam, parent=target)
-        make_text("beam_lbl_y", "y", 0.16, gizmo + Vector((0, 0, alen + 0.14)),
-                  txmat, target=cam, parent=target)
-        make_text("beam_lbl_zdir", "z", 0.16, gizmo + Vector((0, alen + 0.14, 0)),
-                  txmat, target=cam, parent=target)
+        # Two cameras on the real-space view: a 3/4 "flythrough" and an axial
+        # one looking down the beam axis (best for seeing transverse rotation).
+        dmax = (sep + spread) * s_trans
+        off = min(2.5, max(0.55, 1.2 * dmax / 2.27))
+        self._beam_camera("beam", target, Vector((-5.4, -8.2, 3.2)) * off,
+                          lens=46, title="Real space — beam frame", exag=exag,
+                          dof=True)
+        axd = ext_t * 4.5 + 8.0
+        self._beam_camera("beam_axial", target,
+                          Vector((ext_t * 0.5 + 0.7, -axd, ext_t * 0.4 + 0.5)),
+                          lens=40, title="Real space — axial (down the bore)",
+                          exag=exag, dof=False)
 
-        # Title block as a flat composited overlay (fixed in frame).
-        self.hud_collection("beam")
-        self.make_overlay("beam", lens=46.0)
-        self.add_hud_text("beam", "beam_title", "Real space — beam frame",
-                          0.15, 0.0, 0.80, 4.5, bold=True)
-        self.add_hud_text("beam", "beam_caption",
-                          f"transverse scale ×{exag:.0f}", 0.085, 0.0, 0.655, 4.5)
-        self.add_z_readout("beam", "beam", 0.085, 0.0, 0.55, 4.5)
-        self.add_legend("beam", "beam", -1.62, 0.82, 4.5, 0.105)
-
+        axmat = self.mats["axis"]
         # Straight reference axis at the nominal beamline (x = y = 0); off-axis
         # orbits sweep around it. The current z is shown by the HUD readout, so
         # no in-scene z-tick labels (which the moving camera would smear).
@@ -928,7 +1026,7 @@ class Builder:
             "BeamRim", (-6.0 - ext_t, BEAM_LENGTH * 0.7, height + 1.5),
             target, size=12.0, power=1500, temperature=3900.0))
 
-        self.build_elements(to_world, s_trans, s_long, cam)
+        self.build_elements(to_world, s_trans, s_long, self.cameras["beam"])
 
     # -- camera-locked HUD overlays -------------------------------------------
 
