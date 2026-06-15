@@ -121,6 +121,10 @@ def build_parser():
                          "frames (default: auto — scales with the granularity "
                          "of the input data, up to --max-duration)")
     sc.add_argument("--fps", type=int, default=24, help="frames per second")
+    sc.add_argument("--speed", type=float, default=1.0, metavar="X",
+                    help="playback speed multiplier for the beam evolution: "
+                         "<1 is slower (more frames, longer movie), >1 faster. "
+                         "Useful for short beams that change too quickly")
     sc.add_argument("--max-duration", type=float, default=180.0, metavar="SEC",
                     help="cap on the total movie length (including fades) used "
                          "when --frames is auto")
@@ -658,6 +662,14 @@ def main(argv=None):
             print(f"[bunchrender] using the first {kept} step(s) of each track "
                   "(--max-steps)")
         _auto_timing(args, track_sets)
+        # Speed multiplier: <1 stretches the evolution over more frames (slower
+        # motion, longer movie); >1 compresses it. The resampling grid is
+        # unchanged, so slowing down also interpolates more smoothly.
+        if args.speed <= 0:
+            raise SystemExit("error: --speed must be positive")
+        if args.speed != 1.0:
+            args.frames = int(round(args.frames / args.speed))
+            print(f"[bunchrender] speed ×{args.speed:g}: {args.frames} evolution frames")
         args.frames = max(2, args.frames)
         args.time_samples = max(2, args.time_samples)
         bundle = _resample_beams(args, track_sets, labels)

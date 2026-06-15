@@ -899,10 +899,12 @@ class Builder:
             cam.data.dof.aperture_fstop = 4.0
         self.cameras[label] = cam
 
-        # Axis tripod pinned to a fixed lower-left spot in this camera's view,
-        # regardless of the zoom. A pivot empty is parented to the camera and
-        # counter-rotated by the (constant) camera orientation, so the arrows
-        # stay aligned to world x/y/z while riding at a fixed screen position.
+        # Axis tripod in this camera's lower-left (a pivot empty parented to
+        # the camera and counter-rotated by the constant camera orientation, so
+        # the arrows stay aligned to world x/y/z and never get cut off). Its
+        # scale is animated inversely with the camera distance, so it grows as
+        # the camera dollies in and shrinks as it dollies out -- communicating
+        # the zoom the way a fixed-world-size object near the bunch would.
         axmat, txmat = self.mats["axis"], self.mats["text"]
         cam_rot = (-u).to_track_quat("-Z", "Y")
         pivot = bpy.data.objects.new(f"{label}_gizmo", None)
@@ -912,6 +914,12 @@ class Builder:
         pivot.location = (-0.42, -0.24, -1.6)  # camera-local: lower-left, front
         pivot.rotation_mode = "QUATERNION"
         pivot.rotation_quaternion = cam_rot.inverted()
+        d_ref = dist(sorted(fit_r)[len(fit_r) // 2])  # median distance
+        for s, frame in enumerate(self.sample_frames):
+            sc = min(3.0, max(0.3, d_ref / dist(fit_r[s])))
+            pivot.scale = (sc, sc, sc)
+            pivot.keyframe_insert("scale", frame=frame)
+        set_interpolation(pivot.animation_data, "LINEAR")
         alen = 0.16
         make_arrow(f"{label}_ax_x", (0, 0, 0), (1, 0, 0), alen, 0.006, axmat, parent=pivot)
         make_arrow(f"{label}_ax_y", (0, 0, 0), (0, 0, 1), alen, 0.006, axmat, parent=pivot)

@@ -316,6 +316,7 @@ bunchrender INPUT [INPUT2 ...] [-o out.blend]
   --trails N              real-space comet tails fading over N samples (0=off)
   --no-hud                skip the 2D sub-projection HUD panels
   --frames N --fps N      evolution length (default: auto from input granularity)
+  --speed X               playback speed: <1 slower/longer, >1 faster
   --max-duration SEC      cap for the auto movie length (default 180)
   --fade-in/--hold/--fade-out SEC   timeline polish (0.75 / 0.5 / 1.5)
   --samples N             Cycles samples (default 64, denoised)
