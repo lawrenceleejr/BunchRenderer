@@ -72,6 +72,10 @@ cd BunchRenderer
 ./bin/bunchrender /path/to/tracks.txt --render --gpu \
     --blender /Applications/Blender.app/Contents/MacOS/Blender
 
+# quick low-quality draft to check it before a full render:
+./bin/bunchrender /path/to/tracks.txt --render --lq \
+    --blender /Applications/Blender.app/Contents/MacOS/Blender
+
 # with the beamline geometry superimposed on the real-space view:
 ./bin/bunchrender /path/to/tracks.txt --render --gpu --elements g4_00.wrl \
     --blender /Applications/Blender.app/Contents/MacOS/Blender
@@ -299,6 +303,7 @@ bunchrender INPUT [INPUT2 ...] [-o out.blend]
   --cameras LIST          cameras to render (default all)
   --format mp4|png|both   movie per camera, PNG frame folders, or both
   --gpu                   render on the GPU (Metal/CUDA/OptiX/HIP/oneAPI)
+  --lq                    fast low-quality draft (low samples/res/frames, GPU)
   --views LIST            which views to build (default all)
   --elements FILE         beamline geometry: g4bl VRML (.wrl) or CSV
   --elements-max-radius MM  drop shapes wider than this (default 1000)

@@ -122,15 +122,15 @@ def build_parser():
     sc.add_argument("--max-duration", type=float, default=180.0, metavar="SEC",
                     help="cap on the total movie length (including fades) used "
                          "when --frames is auto")
-    sc.add_argument("--fade-in", type=float, default=0.75, metavar="SEC",
+    sc.add_argument("--fade-in", type=float, default=None, metavar="SEC",
                     help="lights-on ramp before the beam evolution starts "
-                         "(0 disables)")
-    sc.add_argument("--hold", type=float, default=0.5, metavar="SEC",
+                         "(default 0.75; 0 disables)")
+    sc.add_argument("--hold", type=float, default=None, metavar="SEC",
                     help="hold on the final beam state (cameras keep orbiting) "
-                         "before the fade-out")
-    sc.add_argument("--fade-out", type=float, default=1.5, metavar="SEC",
+                         "before the fade-out (default 0.5)")
+    sc.add_argument("--fade-out", type=float, default=None, metavar="SEC",
                     help="lights-off ramp at the end of the animation "
-                         "(0 disables)")
+                         "(default 1.5; 0 disables)")
     sc.add_argument("--samples", type=int, default=None,
                     help="Cycles render samples (default: 64)")
     sc.add_argument("--resolution", default=None, metavar="WxH",
@@ -184,30 +184,24 @@ def _builder_args(args, data_path, blend_path, render_dir):
 
 
 def _apply_quality_defaults(args):
-    """Fill in samples/resolution/cameras (left as None on the command line),
-    applying fast --lq draft values when requested. Anything the user set
-    explicitly is left untouched, so e.g. `--lq --cameras all` still wins."""
+    """Fill in options left as None on the command line. --lq applies a fast,
+    very-low-quality draft preset; anything the user set explicitly still wins
+    (e.g. `--lq --cameras all`). Without --lq the normal defaults apply."""
     if args.lq:
         args.gpu = True
-        if args.samples is None:
-            args.samples = 12
-        if args.resolution is None:
-            args.resolution = "960x540"
-        if args.cameras is None:
-            args.cameras = "beam"
-        if args.frames is None:
-            args.frames = 120
-        if args.time_samples is None:
-            args.time_samples = 40
-        print("[bunchrender] --lq draft: "
-              f"{args.samples} samples, {args.resolution}, cameras={args.cameras}, "
-              f"{args.frames} frames, {args.time_samples} time-samples, GPU")
-    if args.samples is None:
-        args.samples = 64
-    if args.resolution is None:
-        args.resolution = "1920x1080"
-    if args.cameras is None:
-        args.cameras = "all"
+        lq = {"samples": 4, "resolution": "640x360", "cameras": "beam",
+              "frames": 48, "time_samples": 20,
+              "fade_in": 0.0, "hold": 0.0, "fade_out": 0.0}
+        for key, val in lq.items():
+            if getattr(args, key) is None:
+                setattr(args, key, val)
+        print(f"[bunchrender] --lq draft: {args.samples} samples, "
+              f"{args.resolution}, cameras={args.cameras}, {args.frames} frames, "
+              f"{args.time_samples} time-samples, no fades, GPU")
+    for key, val in {"samples": 64, "resolution": "1920x1080", "cameras": "all",
+                     "fade_in": 0.75, "hold": 0.5, "fade_out": 1.5}.items():
+        if getattr(args, key) is None:
+            setattr(args, key, val)
 
 
 def _auto_timing(args, track_sets):
