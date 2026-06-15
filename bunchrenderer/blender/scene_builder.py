@@ -119,6 +119,18 @@ def link(obj):
     return obj
 
 
+def smooth_mesh(mesh):
+    """Shade every face of a mesh smooth. Particle spheres (analytic Cycles
+    points) and the convex hulls (Set Shade Smooth node) are already smooth;
+    this covers the bmesh/from_pydata primitives -- arrows, pedestals, the
+    floor and the beamline element solids."""
+    n = len(mesh.polygons)
+    if n:
+        mesh.polygons.foreach_set("use_smooth", [True] * n)
+        mesh.update()
+    return mesh
+
+
 def wipe_scene():
     for obj in list(bpy.data.objects):
         bpy.data.objects.remove(obj, do_unlink=True)
@@ -288,6 +300,7 @@ def make_arrow(name, origin, direction, length, radius, material, parent=None):
     mesh = bpy.data.meshes.new(name)
     bm.to_mesh(mesh)
     bm.free()
+    smooth_mesh(mesh)
     mesh.materials.append(material)
     obj = bpy.data.objects.new(name, mesh)
     if parent is not None:
@@ -389,6 +402,7 @@ def make_cylinder(name, location, radius, depth, material, segments=48):
     mesh = bpy.data.meshes.new(name)
     bm.to_mesh(mesh)
     bm.free()
+    smooth_mesh(mesh)
     mesh.materials.append(material)
     obj = bpy.data.objects.new(name, mesh)
     obj.location = location
@@ -400,6 +414,7 @@ def make_plane(name, location, size, material):
     h = size / 2.0
     mesh.from_pydata([(-h, -h, 0), (h, -h, 0), (h, h, 0), (-h, h, 0)],
                      [], [(0, 1, 2, 3)])
+    smooth_mesh(mesh)
     mesh.materials.append(material)
     obj = bpy.data.objects.new(name, mesh)
     obj.location = location
@@ -709,10 +724,10 @@ class Builder:
             emission_strength=1.0)
         self.mats["hud_backdrop"] = make_material(
             "BR_HudBackdrop", (0.005, 0.006, 0.01), roughness=1.0, alpha=0.6)
-        # Tron-style beamline elements: ghostly solid + brighter wireframe.
+        # Beamline elements: ghostly solid + thin, faint emissive wireframe.
         self.mats["elem_wire"] = make_material(
             "BR_ElemWire", (0.25, 0.8, 1.0), emission=(0.25, 0.8, 1.0),
-            emission_strength=1.4, alpha=0.4)
+            emission_strength=1.1, alpha=0.22)
         self.mats["elem_label"] = make_material(
             "BR_ElemLabel", (0.55, 0.85, 1.0), emission=(0.55, 0.85, 1.0),
             emission_strength=1.0)
@@ -741,10 +756,11 @@ class Builder:
 
         # Decompose transverse motion: "spread" is each bunch's size around
         # its own traveling centroid; "orbit" is how far any beam's centroid
-        # strays from the static reference (helical orbits, inter-beam
-        # separation). One uniform transverse scale keeps geometry faithful:
-        # the bunch targets BEAM_HALF_TRANSVERSE units, the orbit may use up
-        # to BEAM_ORBIT_HALF.
+        # strays from the static reference (off-axis trajectories, inter-beam
+        # separation -- whatever the data contains; nothing is imposed). One
+        # uniform transverse scale keeps geometry faithful: the bunch targets
+        # BEAM_HALF_TRANSVERSE units, the excursion may use up to
+        # BEAM_ORBIT_HALF.
         cx0 = sum(c[0] for c in cents) / S
         cy0 = sum(c[1] for c in cents) / S
         beam_cents = []  # per-beam centroid path [S][2] (transverse, mm)
@@ -773,8 +789,8 @@ class Builder:
 
         # Camera rig: an empty rides the combined centroid; the camera is
         # parented to it at an offset and tracks it, so motion blur comes for
-        # free and helical orbits keep the bunches framed. The offset scales
-        # with how far content strays from the combined centroid.
+        # free and off-axis trajectories keep the bunches framed. The offset
+        # scales with how far content strays from the combined centroid.
         cpath = [Vector(to_world(c)) for c in cents]
         target = make_empty("BeamTarget", cpath[0])
         for s, frame in enumerate(self.sample_frames):
@@ -845,7 +861,7 @@ class Builder:
         self.add_legend("beam", "beam", -1.62, 0.82, 4.5, 0.105)
 
         # Straight reference axis at the nominal beamline (x = y = 0), with a
-        # ruler of real-world z positions; helical orbits sweep around it.
+        # ruler of real-world z positions; off-axis orbits sweep around it.
         origin = Vector(to_world((0.0, 0.0, zmin)))
         make_arrow("beam_ax_z", origin, (0, 1, 0), BEAM_LENGTH + 1.5, 0.016, axmat)
         for k in range(5):
@@ -1072,6 +1088,7 @@ class Builder:
 
     def _ghost_pair(self, name, mesh, color):
         """Solid translucent object + brighter wireframe overlay (tron look)."""
+        smooth_mesh(mesh)
         solid = bpy.data.objects.new(name, mesh)
         mesh.materials.append(self.elem_solid_material(color))
         link(solid)
@@ -1081,7 +1098,7 @@ class Builder:
         wire = bpy.data.objects.new(f"{name}_wire", wire_mesh)
         link(wire)
         mod = wire.modifiers.new("Wireframe", "WIREFRAME")
-        mod.thickness = 0.012
+        mod.thickness = 0.006
         mod.use_replace = True
         for obj in (solid, wire):
             overlay_only(obj)  # don't let ghosts cast shadows on the beam
@@ -1101,7 +1118,7 @@ class Builder:
             for poly in m["lines"]:
                 cu = bpy.data.curves.new(f"elem_{k}_{name}_lines", "CURVE")
                 cu.dimensions = "3D"
-                cu.bevel_depth = 0.012
+                cu.bevel_depth = 0.006
                 cu.materials.append(self.mats["elem_wire"])
                 sp = cu.splines.new("POLY")
                 sp.points.add(len(poly) - 1)

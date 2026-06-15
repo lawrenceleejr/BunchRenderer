@@ -28,11 +28,12 @@ renders movies — containing:
   views: every 3D projection shows all the blobs on shared axes, every camera
   HUD carries a color legend, and each beam's objects live in their own
   Blender collection. Beams are resampled onto one shared clock.
-* **Helical orbits** — the real-space view separates bunch size from
-  centroid excursion, so beams orbiting centimeters away from the reference
-  axis are shown sweeping around the straight reference ruler (with per-beam
-  centroid guide trails), while the bunches themselves stay framed by the
-  chase camera.
+* **Off-axis trajectories** — the real-space view separates bunch size from
+  centroid excursion, so beams traveling centimeters off the reference axis
+  are shown as real excursions around the straight reference ruler (with
+  per-beam centroid guide trails) rather than flattened onto it, while the
+  bunches themselves stay framed by the chase camera. Nothing is imposed on
+  the data — whatever path the tracks contain is what you see.
 * **A polished timeline** — the scene wakes up from black (~0.75 s: lamps,
   every emissive material and the text overlays ramp together), the beam
   evolves along the beamline, the final state holds while the cameras keep
@@ -141,9 +142,9 @@ bunchrender examples/gaussian_beam.txt --render --cameras beam,xxpy --format png
 bunchrender examples/gaussian_beam.txt --render \
     --elements examples/beamline_solenoids.wrl
 
-# Compare two beams (e.g. on-axis vs. a 30 mm helical orbit) in every view
-bunchrender examples/gaussian_beam.txt examples/gaussian_beam_helix.txt \
-    --render --labels "reference,helical"
+# Compare two beams (e.g. on-axis vs. an 8 mm off-axis bunch) in every view
+bunchrender examples/gaussian_beam.txt examples/gaussian_beam_offset.txt \
+    --render --labels "reference,off-axis"
 ```
 
 By default **only the `.blend` is produced**; `--render` switches on the fully
@@ -302,14 +303,14 @@ bunchrender INPUT [INPUT2 ...] [-o out.blend]
 `examples/gaussian_beam.txt` is a 150-muon Gaussian bunch tracked through a
 uniform focusing channel — the x–x′ and y–y′ ellipses rotate at different
 rates as the bunch flies, so every projection visibly evolves.
-`examples/gaussian_beam_helix.txt` is a second bunch whose centroid executes
-a 30 mm-radius helical orbit around the reference axis. Regenerate either
-(or emit a per-track CSV folder) with:
+`examples/gaussian_beam_offset.txt` is a second bunch injected 8 mm off-axis
+in x (a non-trivial second beam for the multi-beam comparison). Regenerate
+either (or emit a per-track CSV folder) with:
 
 ```bash
 python3 examples/make_gaussian_beam.py --particles 300 --stations 80 --csv-dir tracks_csv
-python3 examples/make_gaussian_beam.py --orbit-radius 30 --orbit-wavelength 1500 \
-    --out examples/gaussian_beam_helix.txt
+python3 examples/make_gaussian_beam.py --offset-x 8 --seed 7 \
+    --out examples/gaussian_beam_offset.txt
 ```
 
 When several beams are loaded, particle caps are split between them
