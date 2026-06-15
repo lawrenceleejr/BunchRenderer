@@ -610,6 +610,9 @@ class Builder:
         scene.cycles.samples = self.args.samples
         scene.cycles.use_denoising = True
         scene.cycles.device = "GPU" if self.args.gpu and enable_gpu() else "CPU"
+        # Plenty of transparent bounces so the beam stays visible even through
+        # many layers of low-opacity beamline geometry.
+        scene.cycles.transparent_max_bounces = 128
         scene.render.use_motion_blur = True
         scene.render.motion_blur_shutter = 0.55
         scene.render.fps = self.args.fps
@@ -731,15 +734,29 @@ class Builder:
         self._elem_solid_cache = {}
 
     def elem_solid_material(self, color):
-        """Translucent ghost material for beamline elements, tinted by the
-        color the geometry carries (e.g. from the g4bl VRML export)."""
+        """Non-occluding ghost material for beamline elements: a pure
+        Transparent BSDF (passes 100% of whatever is behind it, with no
+        Fresnel/specular -- so even a bore wall seen edge-on never hides the
+        beam) plus a faint additive Emission shell tinted by the geometry's
+        own color. It can only *add* a soft glow, never darken or block."""
         key = tuple(round(c, 3) for c in color)
         mat = self._elem_solid_cache.get(key)
-        if mat is None:
-            mat = make_material(f"BR_ElemSolid_{len(self._elem_solid_cache)}",
-                                key, roughness=0.4, alpha=0.045,
-                                emission=key, emission_strength=0.15)
-            self._elem_solid_cache[key] = mat
+        if mat is not None:
+            return mat
+        mat = bpy.data.materials.new(f"BR_ElemSolid_{len(self._elem_solid_cache)}")
+        mat.use_nodes = True
+        nt = mat.node_tree
+        nt.nodes.clear()
+        out = nt.nodes.new("ShaderNodeOutputMaterial")
+        add = nt.nodes.new("ShaderNodeAddShader")
+        transp = nt.nodes.new("ShaderNodeBsdfTransparent")
+        emit = nt.nodes.new("ShaderNodeEmission")
+        emit.inputs["Color"].default_value = (*key, 1.0)
+        emit.inputs["Strength"].default_value = 0.10  # faint shell
+        nt.links.new(emit.outputs[0], add.inputs[0])
+        nt.links.new(transp.outputs[0], add.inputs[1])
+        nt.links.new(add.outputs[0], out.inputs["Surface"])
+        self._elem_solid_cache[key] = mat
         return mat
 
     # -- beam (real space) view ---------------------------------------------

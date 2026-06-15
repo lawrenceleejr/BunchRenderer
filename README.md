@@ -199,10 +199,13 @@ coordinates as the track file. Pass it straight in:
 bunchrender tracks.txt --render --elements g4_00.wrl
 ```
 
-Solids become low-opacity ghosts tinted with their g4bl colors, overlaid with
-brighter emissive wireframes. Shapes wider than `--elements-max-radius`
-(default 1000 mm) are dropped so enclosure/world volumes don't swallow the
-scene.
+Solids become faint additive ghosts tinted with their g4bl colors, overlaid
+with thin emissive wireframes. The ghost shells are purely additive (a
+transparent shader plus a soft emission, with no Fresnel/specular), so they
+only add a gentle glow and **never occlude the beam** — particles stay fully
+visible even on-axis inside a pipe bore or buried in many nested volumes.
+Shapes wider than `--elements-max-radius` (default 1000 mm) are dropped so
+enclosure/world volumes don't swallow the scene.
 
 **Hand-written CSV** for quick sketches (`examples/beamline_elements.csv`):
 
