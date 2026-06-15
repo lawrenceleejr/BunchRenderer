@@ -30,10 +30,11 @@ renders movies — containing:
   Blender collection. Beams are resampled onto one shared clock.
 * **Off-axis trajectories** — the real-space view separates bunch size from
   centroid excursion, so beams traveling centimeters off the reference axis
-  are shown as real excursions around the straight reference ruler (with
-  per-beam centroid guide trails) rather than flattened onto it, while the
-  bunches themselves stay framed by the chase camera. Nothing is imposed on
-  the data — whatever path the tracks contain is what you see.
+  are shown as real excursions around the straight reference ruler rather than
+  flattened onto it. The chase camera dollies *straight* down the beamline
+  (it never corkscrews), so the bunch's transverse motion reads as the bunch
+  moving within the frame. Nothing is imposed on the data — whatever path the
+  tracks contain is what you see.
 * **A polished timeline** — the scene wakes up from black (~0.75 s: lamps,
   every emissive material and the text overlays ramp together), the beam
   evolves along the beamline, the final state holds while the cameras keep

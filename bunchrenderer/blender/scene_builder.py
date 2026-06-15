@@ -694,9 +694,6 @@ class Builder:
             self.mats[f"legend{b}"] = make_material(
                 f"BR_Legend{b}", c["particle"],
                 emission=c["particle"], emission_strength=2.0)
-            self.mats[f"guide{b}"] = make_material(
-                f"BR_Guide{b}", c["particle"], emission=c["particle"],
-                emission_strength=0.6)
         self.mats["axis"] = make_material(
             "BR_Axis", PALETTE["axis"], metallic=0.9, roughness=0.35)
         self.mats["text"] = make_material(
@@ -787,14 +784,17 @@ class Builder:
                     (p[2] - zmin) * s_long,
                     height + (p[1] - cy0) * s_trans)
 
-        # Camera rig: an empty rides the combined centroid; the camera is
-        # parented to it at an offset and tracks it, so motion blur comes for
-        # free and off-axis trajectories keep the bunches framed. The offset
-        # scales with how far content strays from the combined centroid.
+        # Camera rig: an empty dollies *straight* down the beamline -- it
+        # advances only longitudinally, with its transverse position pinned to
+        # the corridor center -- and the camera is parented to it and tracks
+        # it. The beam's transverse motion then shows as the bunch moving
+        # around within the frame; the camera itself never corkscrews. Motion
+        # blur still comes for free from the forward dolly.
         cpath = [Vector(to_world(c)) for c in cents]
-        target = make_empty("BeamTarget", cpath[0])
+        tpath = [Vector((0.0, c.y, height)) for c in cpath]
+        target = make_empty("BeamTarget", tpath[0])
         for s, frame in enumerate(self.sample_frames):
-            target.location = cpath[s]
+            target.location = tpath[s]
             target.keyframe_insert("location", frame=frame)
         set_interpolation(target.animation_data, "LINEAR")
 
@@ -802,7 +802,7 @@ class Builder:
         cam.parent = target
         # Half-coverage of the base framing (lens 46, offset 10.3) is ~2.27
         # units at the target plane; scale the offset so the farthest bunch
-        # edge stays in frame.
+        # edge stays in frame even though the camera stays on the axis.
         dmax = (sep + spread) * s_trans
         off = min(2.5, max(0.55, 1.2 * dmax / 2.27))
         # Base offset chosen to stay outside typical beam-pipe ghost geometry.
@@ -819,20 +819,6 @@ class Builder:
                 f"beam_b{b}", coords, self.sample_frames, (0, 0, 0),
                 radius=0.045, particle_mat=self.mats[f"particle{b}"],
                 hull_mat=self.mats[f"hull{b}"], with_hull=self.with_hull)
-            # Per-beam guide curve tracing this beam's centroid orbit.
-            n = len(coords[0])
-            bpath = [Vector((sum(c[0] for c in row) / n,
-                             sum(c[1] for c in row) / n,
-                             sum(c[2] for c in row) / n)) for row in coords]
-            curve = bpy.data.curves.new(f"BeamGuide_b{b}", "CURVE")
-            curve.dimensions = "3D"
-            curve.bevel_depth = 0.009
-            curve.materials.append(self.mats[f"guide{b}"])
-            spline = curve.splines.new("POLY")
-            spline.points.add(len(bpath) - 1)
-            for pt, c in zip(spline.points, bpath):
-                pt.co = (c.x, c.y, c.z, 1.0)
-            objs.append(link(bpy.data.objects.new(f"BeamGuide_b{b}", curve)))
             for obj in objs:
                 move_to_collection(obj, bcol)
 
@@ -1282,7 +1268,7 @@ class Builder:
 
     def setup_fades(self):
         """The whole scene wakes up from black and returns to black: lamps,
-        every emissive material (particles, guides, wireframes, HUD and the
+        every emissive material (particles, wireframes, HUD and the
         composited text overlays) and the world background all ramp together."""
         if self.fade_in_f <= 0 and self.fade_out_f <= 0:
             return
