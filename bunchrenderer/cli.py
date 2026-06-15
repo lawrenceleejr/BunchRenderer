@@ -317,6 +317,9 @@ class _ProgressReporter:
     RE_CAM = re.compile(r"\[scene_builder\] rendering camera '([^']+)'")
     RE_MARK = re.compile(r"\[scene_builder\] frame-done \d")
     RE_DONE = re.compile(r"Saved: '|Append frame \d")
+    RE_ENC_START = re.compile(r"\[scene_builder\] encode-start (\S+) (\d+)")
+    RE_ENC_FRAME = re.compile(r"\[scene_builder\] encode-frame")
+    RE_ENC_DONE = re.compile(r"\[scene_builder\] encode-done")
     BAR_W = 26
 
     def __init__(self, log_path, verbose):
@@ -335,6 +338,8 @@ class _ProgressReporter:
         self.bar_active = False
         self.build_announced = False
         self.use_marker = False  # builder markers seen; ignore legacy lines
+        self.enc_label = None     # mp4 encode phase (--format both)
+        self.enc_total = self.enc_done = 0
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._ticker = threading.Thread(target=self._tick, daemon=True)
@@ -343,7 +348,11 @@ class _ProgressReporter:
     def _tick(self):
         while not self._stop.wait(1.0):
             with self._lock:
-                if self.total and not self.verbose:
+                if self.verbose:
+                    continue
+                if self.enc_label is not None:
+                    self._enc_progress()
+                elif self.total:
                     self._progress(heartbeat=True)
 
     def _emit(self, text):
@@ -387,6 +396,25 @@ class _ProgressReporter:
             self.use_marker = True
             self._count_frame()
             return
+        m = self.RE_ENC_START.search(s)
+        if m:
+            self.enc_label = m.group(1)
+            self.enc_total = int(m.group(2))
+            self.enc_done = 0
+            if not self.verbose:
+                self._enc_progress()
+            return
+        if self.RE_ENC_FRAME.search(s):
+            self.enc_done += 1
+            if not self.verbose:
+                self._enc_progress()
+            return
+        if self.RE_ENC_DONE.search(s):
+            if not self.verbose and self.enc_label is not None:
+                self._emit(f"[bunchrender] encoded {self.enc_label} "
+                           f"({self.enc_done} frames) to MP4")
+            self.enc_label = None
+            return
         if self.RE_DONE.search(s):
             if not self.use_marker:  # fallback for older scene_builder copies
                 self._count_frame()
@@ -407,6 +435,24 @@ class _ProgressReporter:
         self.done = min(self.done + 1, self.total or self.done + 1)
         self.recent.append(time.monotonic())
         self._progress()
+
+    def _enc_progress(self):
+        if self.verbose or not self.enc_total:
+            return
+        frac = min(1.0, self.enc_done / self.enc_total)
+        if self.tty:
+            filled = int(frac * self.BAR_W)
+            bar = "█" * filled + "·" * (self.BAR_W - filled)
+            sys.stdout.write(f"\r\x1b[K[{bar}] encoding {self.enc_label} MP4  "
+                             f"{self.enc_done}/{self.enc_total}f")
+            sys.stdout.flush()
+            self.bar_active = True
+        else:
+            now = time.monotonic()
+            if self.enc_done >= self.enc_total or now - self.last_draw >= 30:
+                self.last_draw = now
+                print(f"[bunchrender] encoding {self.enc_label} MP4 "
+                      f"{self.enc_done}/{self.enc_total}", flush=True)
 
     def _eta(self):
         now = time.monotonic()

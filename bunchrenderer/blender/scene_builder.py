@@ -22,9 +22,11 @@ output media types.
 """
 
 import argparse
+import glob
 import json
 import math
 import os
+import shutil
 import sys
 
 import bpy
@@ -467,6 +469,12 @@ def enable_gpu():
     return False
 
 
+def _saturate(color, factor):
+    """Push an RGB color away from its grey level to deepen its hue."""
+    g = sum(color) / 3.0
+    return tuple(min(1.0, max(0.0, g + (c - g) * factor)) for c in color)
+
+
 def make_area_light(name, location, target, size, power, temperature=4000.0):
     ld = bpy.data.lights.new(name, "AREA")
     ld.size = size
@@ -789,9 +797,12 @@ class Builder:
             self.mats[f"legend{b}"] = make_material(
                 f"BR_Legend{b}", c["particle"],
                 emission=c["particle"], emission_strength=2.0)
+            # Trails: the beam's own particle hue, but a *saturated* version
+            # at low emission so the color reads clearly (a high-emission
+            # trail blooms toward white, making two beams' trails look alike).
+            tcol = _saturate(c["particle"], 1.35)
             self.mats[f"trail{b}"] = make_material(
-                f"BR_Trail{b}", c["particle"],
-                emission=c["particle"], emission_strength=1.6)
+                f"BR_Trail{b}", tcol, emission=tcol, emission_strength=0.6)
         self.mats["axis"] = make_material(
             "BR_Axis", PALETTE["axis"], metallic=0.9, roughness=0.35)
         self.mats["text"] = make_material(
@@ -1587,16 +1598,37 @@ class Builder:
                                filepath=os.path.join(frames_dir, frames[0]))
         for f in frames[1:]:
             strip.elements.append(f)
-        # Suspend the per-frame progress markers so the cheap encode pass
-        # doesn't inflate the CLI progress bar's frame count.
+        # Swap the per-frame markers for encode-specific ones, so the CLI can
+        # show encode progress separately instead of counting these toward the
+        # Cycles frame total (which would distort the s/frame estimate).
         saved = list(bpy.app.handlers.render_write)
         bpy.app.handlers.render_write.clear()
+
+        def _enc_written(*_a):
+            print("[scene_builder] encode-frame", flush=True)
+
+        bpy.app.handlers.render_write.append(_enc_written)
         try:
             with bpy.context.temp_override(scene=enc):
                 bpy.ops.render.render(animation=True)
         finally:
-            bpy.app.handlers.render_write.extend(saved)
+            bpy.app.handlers.render_write[:] = saved
             bpy.data.scenes.remove(enc)
+
+    def _clean_camera_outputs(self, rdir, label, fmt):
+        """Remove this camera's outputs from a previous run so consecutive
+        renders don't mix (e.g. the MP4 encode picking up stale PNG frames, or
+        an old movie with a different frame range lingering)."""
+        if fmt in ("png", "both"):
+            shutil.rmtree(os.path.join(rdir, label), ignore_errors=True)
+        if fmt in ("mp4", "both"):
+            # digit after the underscore = the frame range, so 'beam_*' does
+            # not also match 'beam_axial_*'.
+            for p in glob.glob(os.path.join(rdir, f"{label}_[0-9]*.mp4")):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
 
     def _render_cameras(self, scene, wanted, rdir):
         fmt = self.args.format
@@ -1608,6 +1640,7 @@ class Builder:
                 continue
             scene.camera = cam
             self.set_active_hud(label)
+            self._clean_camera_outputs(rdir, label, fmt)
             if fmt == "mp4":
                 self._set_ffmpeg_output(scene, os.path.join(rdir, f"{label}_"))
             else:  # png or both -> render the PNG sequence first
@@ -1620,11 +1653,12 @@ class Builder:
                   f"{scene.render.filepath}...", flush=True)
             bpy.ops.render.render(animation=True)
             if fmt == "both":
+                n = scene.frame_end - scene.frame_start + 1
                 mp4 = os.path.join(rdir, f"{label}_"
                                    f"{scene.frame_start:04d}-{scene.frame_end:04d}.mp4")
-                print(f"[scene_builder] encoding '{label}' frames -> {mp4}",
-                      flush=True)
+                print(f"[scene_builder] encode-start {label} {n}", flush=True)
                 self._encode_pngs_to_mp4(os.path.join(rdir, label), "frame_", mp4)
+                print(f"[scene_builder] encode-done {label} -> {mp4}", flush=True)
 
     def run(self):
         load_fonts()
