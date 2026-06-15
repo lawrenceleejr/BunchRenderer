@@ -77,15 +77,20 @@ def build_parser():
                     help="append a _YYYYmmdd-HHMMSS suffix to the .blend, .log "
                          "and render directory so each run is kept separately "
                          "instead of overwriting the previous output")
-    rd.add_argument("--cameras", default="all",
+    rd.add_argument("--cameras", default=None,
                     help="comma-separated cameras to render: "
-                         + ",".join(CAMERA_IDS) + " or 'all'")
+                         + ",".join(CAMERA_IDS) + " or 'all' (default: all)")
     rd.add_argument("--format", choices=("mp4", "png", "both"), default="mp4",
                     help="rendered output: 'mp4' (one movie per camera), 'png' "
                          "(frame folders), or 'both' in a single render pass")
     rd.add_argument("--gpu", action="store_true",
                     help="render on the GPU (Metal/CUDA/OptiX/HIP/oneAPI; "
                          "best with --local — Docker needs a GPU runtime)")
+    rd.add_argument("--lq", action="store_true",
+                    help="low-quality fast draft: enables the GPU and lowers "
+                         "samples, resolution, frames and camera count for a "
+                         "quick look. Any of those flags you set explicitly "
+                         "still win.")
 
     sc = p.add_argument_group("scene")
     sc.add_argument("--views", default="all",
@@ -126,9 +131,10 @@ def build_parser():
     sc.add_argument("--fade-out", type=float, default=1.5, metavar="SEC",
                     help="lights-off ramp at the end of the animation "
                          "(0 disables)")
-    sc.add_argument("--samples", type=int, default=64, help="Cycles render samples")
-    sc.add_argument("--resolution", default="1920x1080", metavar="WxH",
-                    help="render resolution")
+    sc.add_argument("--samples", type=int, default=None,
+                    help="Cycles render samples (default: 64)")
+    sc.add_argument("--resolution", default=None, metavar="WxH",
+                    help="render resolution (default: 1920x1080)")
 
     da = p.add_argument_group("input data")
     da.add_argument("--max-steps", type=int, default=None, metavar="N",
@@ -175,6 +181,33 @@ def _builder_args(args, data_path, blend_path, render_dir):
     if args.render:
         out.append("--render")
     return out
+
+
+def _apply_quality_defaults(args):
+    """Fill in samples/resolution/cameras (left as None on the command line),
+    applying fast --lq draft values when requested. Anything the user set
+    explicitly is left untouched, so e.g. `--lq --cameras all` still wins."""
+    if args.lq:
+        args.gpu = True
+        if args.samples is None:
+            args.samples = 12
+        if args.resolution is None:
+            args.resolution = "960x540"
+        if args.cameras is None:
+            args.cameras = "beam"
+        if args.frames is None:
+            args.frames = 120
+        if args.time_samples is None:
+            args.time_samples = 40
+        print("[bunchrender] --lq draft: "
+              f"{args.samples} samples, {args.resolution}, cameras={args.cameras}, "
+              f"{args.frames} frames, {args.time_samples} time-samples, GPU")
+    if args.samples is None:
+        args.samples = 64
+    if args.resolution is None:
+        args.resolution = "1920x1080"
+    if args.cameras is None:
+        args.cameras = "all"
 
 
 def _auto_timing(args, track_sets):
@@ -514,6 +547,7 @@ def main(argv=None):
     # `pip install .` snapshots the package, so after `git pull` a stale
     # install is the usual cause of "I'm still seeing the old bug".
     print(f"[bunchrender] {__version__} running from {_pkg_path()}")
+    _apply_quality_defaults(args)
     args.views = _validate_csv_list(args.views, VIEW_IDS, "--views")
     args.cameras = _validate_csv_list(args.cameras, CAMERA_IDS, "--cameras")
     args.max_particles = max(4, args.max_particles)
