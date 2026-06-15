@@ -71,6 +71,10 @@ def build_parser():
                          "scene (default: only produce the .blend file)")
     rd.add_argument("--render-dir", default=None, metavar="DIR",
                     help="where to put rendered output (default: <output stem>_renders)")
+    rd.add_argument("--timestamp", action="store_true",
+                    help="append a _YYYYmmdd-HHMMSS suffix to the .blend, .log "
+                         "and render directory so each run is kept separately "
+                         "instead of overwriting the previous output")
     rd.add_argument("--cameras", default="all",
                     help="comma-separated cameras to render: "
                          + ",".join(CAMERA_IDS) + " or 'all'")
@@ -118,6 +122,9 @@ def build_parser():
                     help="render resolution")
 
     da = p.add_argument_group("input data")
+    da.add_argument("--max-steps", type=int, default=None, metavar="N",
+                    help="use only the first N time steps (rows) of each input "
+                         "track, i.e. animate just the start of the trajectory")
     da.add_argument("--max-particles", type=int, default=300,
                     help="cap on the number of particles kept in the scene")
     da.add_argument("--time-samples", type=int, default=None,
@@ -507,9 +514,18 @@ def main(argv=None):
     if out_path.suffix != ".blend":
         out_path = out_path.with_suffix(".blend")
     out_path = out_path.resolve()
+    # Optionally tag every artifact with a run timestamp so successive runs
+    # are kept side by side instead of overwriting each other.
+    stamp = time.strftime("_%Y%m%d-%H%M%S") if args.timestamp else ""
+    if stamp:
+        out_path = out_path.with_name(out_path.stem + stamp + ".blend")
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    render_dir = (Path(args.render_dir).resolve() if args.render_dir
-                  else out_path.with_name(out_path.stem + "_renders"))
+    if args.render_dir:
+        render_dir = Path(args.render_dir).resolve()
+        if stamp:
+            render_dir = render_dir.with_name(render_dir.name + stamp)
+    else:
+        render_dir = out_path.with_name(out_path.stem + "_renders")
 
     labels = ([s.strip() for s in args.labels.split(",")] if args.labels
               else [p.stem or f"beam {i}" for i, p in enumerate(in_paths)])
@@ -519,6 +535,16 @@ def main(argv=None):
     try:
         track_sets = [tracklib.load_tracks(p, drift_length=args.drift_length)
                       for p in in_paths]
+        if args.max_steps is not None:
+            if args.max_steps < 2:
+                raise SystemExit("error: --max-steps must be at least 2")
+            for ts in track_sets:
+                for tr in ts:
+                    for k in ("t", "x", "y", "z", "px", "py", "pz"):
+                        tr[k] = tr[k][:args.max_steps]
+            kept = max(len(tr["t"]) for ts in track_sets for tr in ts)
+            print(f"[bunchrender] using the first {kept} step(s) of each track "
+                  "(--max-steps)")
         _auto_timing(args, track_sets)
         args.frames = max(2, args.frames)
         args.time_samples = max(2, args.time_samples)

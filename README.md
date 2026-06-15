@@ -76,11 +76,18 @@ one MP4 per camera, alongside the `.blend`.
 
 Output is written **directly to the final destination** (`--render-dir`,
 default `<output>_renders/`), so you can watch it fill up while Blender works.
-With `--format png` each frame appears as `…/<camera>/frame_NNNN.png` the
-moment it finishes — open the folder and keep refreshing the newest file.
-With the default `--format mp4` the file grows during rendering but is only
-playable once its camera finishes (one MP4 per camera, so finished cameras
-are watchable while later ones still render).
+With `--format png` each frame appears as
+`<render-dir>/<camera>/frame_NNNN.png` the moment it finishes — open the
+folder and keep refreshing the newest file. With the **default `--format
+mp4` there are no per-frame PNGs**: each camera produces a single
+`<render-dir>/<camera>_0001-NNNN.mp4` that grows during rendering and is
+only playable once that camera finishes (so finished cameras are watchable
+while later ones still render). Pass `--format png` if you want the
+individual frames.
+
+By default each run overwrites the previous `.blend`, `.log` and render
+directory. Pass `--timestamp` to suffix all three with `_YYYYmmdd-HHMMSS`
+so successive runs are kept side by side.
 
 The terminal shows a live progress bar with frame counts, per-camera
 position, elapsed time, ETA and the estimated total:
@@ -270,6 +277,7 @@ bunchrender INPUT [INPUT2 ...] [-o out.blend]
   --docker-image IMAGE    alternative Docker image with `blender` on PATH
   --render                headless mode: render the animation after building
   --render-dir DIR        render output location (default <output>_renders)
+  --timestamp             suffix .blend/.log/renders with a run timestamp
   --cameras LIST          cameras to render (default all)
   --format mp4|png        movie per camera, or PNG frame folders
   --gpu                   render on the GPU (Metal/CUDA/OptiX/HIP/oneAPI)
@@ -283,6 +291,7 @@ bunchrender INPUT [INPUT2 ...] [-o out.blend]
   --fade-in/--hold/--fade-out SEC   timeline polish (0.75 / 0.5 / 1.5)
   --samples N             Cycles samples (default 64, denoised)
   --resolution WxH        default 1920x1080
+  --max-steps N           use only the first N time steps of each input track
   --max-particles N       cap particles kept in the scene (default 300)
   --time-samples N        resampling grid (default: auto from input granularity)
   --drift-length MM       drift used for single-point-per-particle inputs
