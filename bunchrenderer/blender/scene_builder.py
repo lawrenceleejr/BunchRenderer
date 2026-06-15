@@ -269,6 +269,13 @@ def make_view_objects(name, coords, sample_frames, center, radius,
     cloud.location = center
     mod = cloud.modifiers.new("Points", "NODES")
     mod.node_group = points_node_group(f"{name}_points", radius, particle_mat)
+    try:
+        # Keep particles as crisp dots: deformation motion blur would smear
+        # each one along its (transversely exaggerated) velocity into a long
+        # streak. Camera motion blur still conveys the forward motion.
+        cloud.cycles.use_deform_motion = False
+    except AttributeError:
+        pass
     objs = [cloud]
     if with_hull:
         n_last = len(coords) - 1
@@ -873,18 +880,25 @@ class Builder:
             for obj in objs:
                 move_to_collection(obj, bcol)
 
-        # Labeled axis tripod and titles that ride along with the bunch
-        # (parented to the camera target) so they stay in frame.
+        # Labeled axis tripod, pinned to a fixed lower-left spot in the
+        # camera's view so it is always fully framed (the camera's world
+        # orientation is constant during the flight, so placing the gizmo at a
+        # fixed camera-relative offset keeps it on-screen at constant size;
+        # parenting the arrows to the rotation-free target keeps them aligned
+        # to the world x/y/z axes).
         axmat, txmat = self.mats["axis"], self.mats["text"]
-        tripod = Vector((-3.0, 1.2, -0.9))
-        make_arrow("beam_ax_x", tripod, (1, 0, 0), 1.5, 0.022, axmat, parent=target)
-        make_arrow("beam_ax_y", tripod, (0, 0, 1), 1.5, 0.022, axmat, parent=target)
-        make_arrow("beam_ax_zdir", tripod, (0, 1, 0), 1.5, 0.022, axmat, parent=target)
-        make_text("beam_lbl_x", "x", 0.3, tripod + Vector((1.85, 0, 0)),
+        cam_off = Vector((-5.4, -8.2, 3.2)) * off
+        cam_rot = (-cam_off).to_track_quat("-Z", "Y")
+        gizmo = cam_off + cam_rot @ Vector((-0.92, -0.52, -3.5))
+        alen = 0.45
+        make_arrow("beam_ax_x", gizmo, (1, 0, 0), alen, 0.012, axmat, parent=target)
+        make_arrow("beam_ax_y", gizmo, (0, 0, 1), alen, 0.012, axmat, parent=target)
+        make_arrow("beam_ax_zdir", gizmo, (0, 1, 0), alen, 0.012, axmat, parent=target)
+        make_text("beam_lbl_x", "x", 0.16, gizmo + Vector((alen + 0.14, 0, 0)),
                   txmat, target=cam, parent=target)
-        make_text("beam_lbl_y", "y", 0.3, tripod + Vector((0, 0, 1.85)),
+        make_text("beam_lbl_y", "y", 0.16, gizmo + Vector((0, 0, alen + 0.14)),
                   txmat, target=cam, parent=target)
-        make_text("beam_lbl_zdir", "z", 0.3, tripod + Vector((0, 1.85, 0)),
+        make_text("beam_lbl_zdir", "z", 0.16, gizmo + Vector((0, alen + 0.14, 0)),
                   txmat, target=cam, parent=target)
 
         # Title block as a flat composited overlay (fixed in frame).
@@ -897,18 +911,11 @@ class Builder:
         self.add_z_readout("beam", "beam", 0.085, 0.0, 0.55, 4.5)
         self.add_legend("beam", "beam", -1.62, 0.82, 4.5, 0.105)
 
-        # Straight reference axis at the nominal beamline (x = y = 0), with a
-        # ruler of real-world z positions; off-axis orbits sweep around it.
+        # Straight reference axis at the nominal beamline (x = y = 0); off-axis
+        # orbits sweep around it. The current z is shown by the HUD readout, so
+        # no in-scene z-tick labels (which the moving camera would smear).
         origin = Vector(to_world((0.0, 0.0, zmin)))
         make_arrow("beam_ax_z", origin, (0, 1, 0), BEAM_LENGTH + 1.5, 0.016, axmat)
-        for k in range(5):
-            f = k / 4.0
-            zval = (zmin + f * (zmax - zmin)) / 1000.0  # meters
-            tick = origin + Vector((0, f * BEAM_LENGTH, 0))
-            make_arrow(f"beam_tick_{k}", tick + Vector((0, 0, -0.3)),
-                       (0, 0, 1), 0.6, 0.012, axmat)
-            make_text(f"beam_ticklbl_{k}", f"z = {zval:.3g} m", 0.22,
-                      tick + Vector((0.0, 0, -0.66)), txmat, target=cam)
 
         # Corridor lighting: warm key lights along the flight path with a
         # slightly cooler (but still warm) rim from the side.
@@ -1084,6 +1091,10 @@ class Builder:
                 mod.node_group = points_node_group(
                     f"{vid}_hud{pi}_b{b}_pts", 0.0016,
                     self.mats[f"hud_particle{b}"])
+                try:
+                    cloud.cycles.use_deform_motion = False
+                except AttributeError:
+                    pass
                 n_last = len(pcoords) - 1
                 if all(s[0] <= 0 and s[1] >= n_last for s in spans):
                     hull = bpy.data.objects.new(f"{vid}_hud{pi}_b{b}_hull",
