@@ -757,7 +757,7 @@ class Builder:
         # Beamline elements: ghostly solid + thin, faint emissive wireframe.
         self.mats["elem_wire"] = make_material(
             "BR_ElemWire", (0.25, 0.8, 1.0), emission=(0.25, 0.8, 1.0),
-            emission_strength=1.1, alpha=0.22)
+            emission_strength=0.11, alpha=0.025)
         self.mats["elem_label"] = make_material(
             "BR_ElemLabel", (0.55, 0.85, 1.0), emission=(0.55, 0.85, 1.0),
             emission_strength=1.0)
@@ -782,7 +782,7 @@ class Builder:
         transp = nt.nodes.new("ShaderNodeBsdfTransparent")
         emit = nt.nodes.new("ShaderNodeEmission")
         emit.inputs["Color"].default_value = (*key, 1.0)
-        emit.inputs["Strength"].default_value = 0.10  # faint shell
+        emit.inputs["Strength"].default_value = 0.01  # very faint shell
         nt.links.new(emit.outputs[0], add.inputs[0])
         nt.links.new(transp.outputs[0], add.inputs[1])
         nt.links.new(add.outputs[0], out.inputs["Surface"])
