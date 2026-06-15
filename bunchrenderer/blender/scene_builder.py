@@ -856,37 +856,60 @@ class Builder:
 
     # -- beam (real space) view ---------------------------------------------
 
-    def _beam_camera(self, label, target, offset, lens, title, exag, dof):
-        """A real-space camera parented to the (straight-dollying) target,
-        with its own flat overlay (title, transverse scale, z readout, beam
-        legend) and an axis tripod pinned to its lower-left."""
-        cam = make_camera(f"Cam_{label}", tuple(offset), target=target, lens=lens)
+    def _beam_camera(self, label, target, direction, lens, title, exag, dof,
+                     fit_r):
+        """A real-space camera parented to the (straight-dollying) target. Its
+        distance is animated per sample so the bunch *and its recent positions*
+        always fit the frame with margin -- ``fit_r[s]`` is the world-space
+        transverse radius (from the beam axis) that must be visible at sample
+        s. The aim stays straight down the corridor, so the camera zooms
+        (dollies) rather than corkscrews."""
+        u = Vector(direction).normalized()
+        # Vertical half-coverage at camera distance d is d*18*aspect/lens
+        # (36 mm sensor, auto-fit). Invert for the distance that frames fit_r,
+        # clamped so it never zooms in too far or flies absurdly out.
+        k = lens / (18.0 * max(self.aspect, 1e-3))
+        d_min, d_max = 0.9 * k, 26.0 * k
+
+        def dist(r):
+            return min(d_max, max(d_min, 1.35 * r * k))
+
+        cam = make_camera(f"Cam_{label}", tuple(u * dist(fit_r[0])),
+                          target=target, lens=lens)
         cam.parent = target
-        cam.location = tuple(offset)
+        for s, frame in enumerate(self.sample_frames):
+            cam.location = u * dist(fit_r[s])
+            cam.keyframe_insert("location", frame=frame)
+        set_interpolation(cam.animation_data, "LINEAR")
         if dof:
             cam.data.dof.use_dof = True
             cam.data.dof.focus_object = target
             cam.data.dof.aperture_fstop = 4.0
         self.cameras[label] = cam
 
-        # Axis tripod pinned to a fixed lower-left spot in this camera's view.
-        # The camera's world orientation is constant during the flight, so a
-        # fixed camera-relative offset keeps the gizmo framed at constant size;
-        # parenting the arrows to the rotation-free target keeps them aligned
-        # to world x/y/z.
+        # Axis tripod pinned to a fixed lower-left spot in this camera's view,
+        # regardless of the zoom. A pivot empty is parented to the camera and
+        # counter-rotated by the (constant) camera orientation, so the arrows
+        # stay aligned to world x/y/z while riding at a fixed screen position.
         axmat, txmat = self.mats["axis"], self.mats["text"]
-        cam_rot = (-offset).to_track_quat("-Z", "Y")
-        gizmo = offset + cam_rot @ Vector((-0.92, -0.52, -3.5))
-        alen = 0.45
-        make_arrow(f"{label}_ax_x", gizmo, (1, 0, 0), alen, 0.012, axmat, parent=target)
-        make_arrow(f"{label}_ax_y", gizmo, (0, 0, 1), alen, 0.012, axmat, parent=target)
-        make_arrow(f"{label}_ax_zdir", gizmo, (0, 1, 0), alen, 0.012, axmat, parent=target)
-        make_text(f"{label}_lbl_x", "x", 0.16, gizmo + Vector((alen + 0.14, 0, 0)),
-                  txmat, target=cam, parent=target)
-        make_text(f"{label}_lbl_y", "y", 0.16, gizmo + Vector((0, 0, alen + 0.14)),
-                  txmat, target=cam, parent=target)
-        make_text(f"{label}_lbl_z", "z", 0.16, gizmo + Vector((0, alen + 0.14, 0)),
-                  txmat, target=cam, parent=target)
+        cam_rot = (-u).to_track_quat("-Z", "Y")
+        pivot = bpy.data.objects.new(f"{label}_gizmo", None)
+        link(pivot)
+        pivot.parent = cam
+        pivot.matrix_parent_inverse = Matrix.Identity(4)
+        pivot.location = (-0.42, -0.24, -1.6)  # camera-local: lower-left, front
+        pivot.rotation_mode = "QUATERNION"
+        pivot.rotation_quaternion = cam_rot.inverted()
+        alen = 0.16
+        make_arrow(f"{label}_ax_x", (0, 0, 0), (1, 0, 0), alen, 0.006, axmat, parent=pivot)
+        make_arrow(f"{label}_ax_y", (0, 0, 0), (0, 0, 1), alen, 0.006, axmat, parent=pivot)
+        make_arrow(f"{label}_ax_z", (0, 0, 0), (0, 1, 0), alen, 0.006, axmat, parent=pivot)
+        make_text(f"{label}_lbl_x", "x", 0.07, Vector((alen + 0.05, 0, 0)),
+                  txmat, target=cam, parent=pivot)
+        make_text(f"{label}_lbl_y", "y", 0.07, Vector((0, 0, alen + 0.05)),
+                  txmat, target=cam, parent=pivot)
+        make_text(f"{label}_lbl_z", "z", 0.07, Vector((0, alen + 0.05, 0)),
+                  txmat, target=cam, parent=pivot)
 
         self.hud_collection(label)
         self.make_overlay(label, lens=float(lens))
@@ -941,20 +964,15 @@ class Builder:
         # BEAM_ORBIT_HALF.
         cx0 = sum(c[0] for c in cents) / S
         cy0 = sum(c[1] for c in cents) / S
-        beam_cents = []  # per-beam centroid path [S][2] (transverse, mm)
-        spread, orbit, sep = 1e-9, 1e-9, 0.0
+        spread, orbit = 1e-9, 1e-9
         for beam in self.beams:
-            bc = []
-            for s, row in enumerate(beam["pos"]):
+            for row in beam["pos"]:
                 n = len(row)
                 bx = sum(p[0] for p in row) / n
                 by = sum(p[1] for p in row) / n
-                bc.append((bx, by))
                 orbit = max(orbit, abs(bx - cx0), abs(by - cy0))
-                sep = max(sep, abs(bx - cents[s][0]), abs(by - cents[s][1]))
                 for p in row:
                     spread = max(spread, abs(p[0] - bx), abs(p[1] - by))
-            beam_cents.append(bc)
         s_trans = min(BEAM_HALF_TRANSVERSE / spread, BEAM_ORBIT_HALF / orbit)
         exag = s_trans / s_long
         ext_t = (orbit + spread) * s_trans
@@ -995,18 +1013,25 @@ class Builder:
             for obj in objs:
                 move_to_collection(obj, bcol)
 
+        # Per-sample framing radius: the world-space transverse distance from
+        # the beam axis that must stay visible = farthest particle (over a
+        # recent window so trails/recent positions are included) + a margin.
+        W = max(self.args.trails, max(2, S // 15))
+        rad = [0.0] * S
+        for beam in self.beams:
+            for s, row in enumerate(beam["pos"]):
+                m = max((p[0] - cx0) ** 2 + (p[1] - cy0) ** 2 for p in row)
+                rad[s] = max(rad[s], math.sqrt(m))
+        fit_r = [max(rad[max(0, s - W):s + 1]) * s_trans + 0.12 for s in range(S)]
+
         # Two cameras on the real-space view: a 3/4 "flythrough" and an axial
         # one looking down the beam axis (best for seeing transverse rotation).
-        dmax = (sep + spread) * s_trans
-        off = min(2.5, max(0.55, 1.2 * dmax / 2.27))
-        self._beam_camera("beam", target, Vector((-5.4, -8.2, 3.2)) * off,
+        self._beam_camera("beam", target, (-5.4, -8.2, 3.2),
                           lens=46, title="Real space — beam frame", exag=exag,
-                          dof=True)
-        axd = ext_t * 4.5 + 8.0
-        self._beam_camera("beam_axial", target,
-                          Vector((ext_t * 0.5 + 0.7, -axd, ext_t * 0.4 + 0.5)),
+                          dof=True, fit_r=fit_r)
+        self._beam_camera("beam_axial", target, (0.45, -3.2, 0.32),
                           lens=40, title="Real space — axial (down the bore)",
-                          exag=exag, dof=False)
+                          exag=exag, dof=False, fit_r=fit_r)
 
         axmat = self.mats["axis"]
         # Straight reference axis at the nominal beamline (x = y = 0); off-axis
