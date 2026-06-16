@@ -836,11 +836,13 @@ class Builder:
             "BR_HudBackdrop", (0.005, 0.006, 0.01), roughness=1.0, alpha=0.6)
         # Beamline elements: ghostly solid + thin emissive wireframe (and a
         # name label for CSV). All are non-occluding additive shells, kept very
-        # faint so the geometry never competes with the beam.
-        self.mats["elem_wire"] = self._ghost_emission_mat(
-            "BR_ElemWire", (0.25, 0.8, 1.0), 0.035)
-        self.mats["elem_label"] = self._ghost_emission_mat(
-            "BR_ElemLabel", (0.55, 0.85, 1.0), 0.7)
+        # faint so the geometry never competes with the beam. In --reveal mode
+        # these are (re)built in build_elements, once the beam target exists.
+        if not self.args.reveal_elements:
+            self.mats["elem_wire"] = self._ghost_emission_mat(
+                "BR_ElemWire", (0.25, 0.8, 1.0), 0.035)
+            self.mats["elem_label"] = self._ghost_emission_mat(
+                "BR_ElemLabel", (0.55, 0.85, 1.0), 0.7)
         self._elem_solid_cache = {}
 
     def _ghost_emission_mat(self, name, color, strength):
