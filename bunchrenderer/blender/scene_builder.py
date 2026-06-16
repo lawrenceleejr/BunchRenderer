@@ -74,6 +74,7 @@ def parse_args():
     p.add_argument("--trails", type=int, default=0)
     p.add_argument("--no-hud", action="store_true")
     p.add_argument("--reveal-elements", action="store_true")
+    p.add_argument("--fixed-zoom", action="store_true")
     p.add_argument("--gpu", action="store_true")
     p.add_argument("--fade-in", type=float, default=0.75)
     p.add_argument("--hold", type=float, default=0.5)
@@ -691,6 +692,7 @@ class Builder:
         self.beam_cols = []
         self.overlays = {}      # camera label -> {"scene", "lens"}
         self.comp_ov_rl = None  # compositor RLayers node showing the overlay
+        self._beam_target = None  # head reference for --reveal-elements
         w, _, h = args.resolution.lower().partition("x")
         self.aspect = int(h or 1080) / int(w or 1920)
         self.mats = {}
@@ -833,19 +835,22 @@ class Builder:
         self.mats["hud_backdrop"] = make_material(
             "BR_HudBackdrop", (0.005, 0.006, 0.01), roughness=1.0, alpha=0.6)
         # Beamline elements: ghostly solid + thin emissive wireframe (and a
-        # name label for CSV). All are non-occluding additive shells.
+        # name label for CSV). All are non-occluding additive shells, kept very
+        # faint so the geometry never competes with the beam.
         self.mats["elem_wire"] = self._ghost_emission_mat(
-            "BR_ElemWire", (0.25, 0.8, 1.0), 0.11)
+            "BR_ElemWire", (0.25, 0.8, 1.0), 0.035)
         self.mats["elem_label"] = self._ghost_emission_mat(
-            "BR_ElemLabel", (0.55, 0.85, 1.0), 1.0)
+            "BR_ElemLabel", (0.55, 0.85, 1.0), 0.7)
         self._elem_solid_cache = {}
 
     def _ghost_emission_mat(self, name, color, strength):
         """Non-occluding ghost material: a pure Transparent BSDF (passes 100%
         of whatever is behind, no Fresnel/specular, so it never hides the
-        beam) plus a faint additive Emission shell. With --reveal-elements the
-        emission is scaled by the object's color alpha, so each element can be
-        faded in/out per-object as the beam head passes (see _reveal_anim)."""
+        beam) plus a faint additive Emission shell. With --reveal-elements (and
+        once the beam target exists) the emission is windowed *per fragment* by
+        the fragment's world position along the beam axis relative to the beam
+        head, so only the geometry right around the head glows -- even for long
+        elements that span much of the corridor."""
         color = tuple(round(c, 4) for c in color)
         mat = bpy.data.materials.new(name)
         mat.use_nodes = True
@@ -856,12 +861,41 @@ class Builder:
         transp = nt.nodes.new("ShaderNodeBsdfTransparent")
         emit = nt.nodes.new("ShaderNodeEmission")
         emit.inputs["Color"].default_value = (*color, 1.0)
-        if self.args.reveal_elements:
-            oi = nt.nodes.new("ShaderNodeObjectInfo")
-            mul = nt.nodes.new("ShaderNodeMath")
-            mul.operation = "MULTIPLY"
+        target = getattr(self, "_beam_target", None)
+        if self.args.reveal_elements and target is not None:
+            ahead, behind, fade = 2.5, 2.5, 2.0  # world units around the head
+            geo = nt.nodes.new("ShaderNodeNewGeometry")
+            sep = nt.nodes.new("ShaderNodeSeparateXYZ")
+            nt.links.new(geo.outputs["Position"], sep.inputs[0])
+            # d = fragment_worldY - head_worldY  (beam travels along +Y)
+            d = nt.nodes.new("ShaderNodeMath"); d.operation = "SUBTRACT"
+            nt.links.new(sep.outputs["Y"], d.inputs[0])
+            fc = d.inputs[1].driver_add("default_value")
+            fc.driver.type = "AVERAGE"  # single var, no scripted expression
+            var = fc.driver.variables.new()
+            var.type = "TRANSFORMS"
+            tg = var.targets[0]
+            tg.id = target
+            tg.transform_type = "LOC_Y"
+            tg.transform_space = "WORLD_SPACE"
+            # trapezoid window: min((ahead - d)/fade, (d + behind)/fade) clamped
+            up = nt.nodes.new("ShaderNodeMath"); up.operation = "SUBTRACT"
+            up.inputs[0].default_value = ahead
+            nt.links.new(d.outputs[0], up.inputs[1])           # ahead - d
+            dn = nt.nodes.new("ShaderNodeMath"); dn.operation = "ADD"
+            dn.inputs[1].default_value = behind
+            nt.links.new(d.outputs[0], dn.inputs[0])           # d + behind
+            win = nt.nodes.new("ShaderNodeMath"); win.operation = "MINIMUM"
+            nt.links.new(up.outputs[0], win.inputs[0])
+            nt.links.new(dn.outputs[0], win.inputs[1])
+            scal = nt.nodes.new("ShaderNodeMath"); scal.operation = "DIVIDE"
+            nt.links.new(win.outputs[0], scal.inputs[0])
+            scal.inputs[1].default_value = fade
+            clamp = nt.nodes.new("ShaderNodeClamp")
+            nt.links.new(scal.outputs[0], clamp.inputs["Value"])
+            mul = nt.nodes.new("ShaderNodeMath"); mul.operation = "MULTIPLY"
+            nt.links.new(clamp.outputs[0], mul.inputs[0])
             mul.inputs[1].default_value = strength
-            nt.links.new(oi.outputs["Alpha"], mul.inputs[0])
             nt.links.new(mul.outputs[0], emit.inputs["Strength"])
         else:
             emit.inputs["Strength"].default_value = strength
@@ -877,46 +911,9 @@ class Builder:
         mat = self._elem_solid_cache.get(key)
         if mat is None:
             mat = self._ghost_emission_mat(
-                f"BR_ElemSolid_{len(self._elem_solid_cache)}", key, 0.01)
+                f"BR_ElemSolid_{len(self._elem_solid_cache)}", key, 0.0025)
             self._elem_solid_cache[key] = mat
         return mat
-
-    def _frame_at_lead(self, y):
-        """Frame at which the beam head (lead_y) reaches world-y ``y``."""
-        ly, fr = self._lead_y, self.sample_frames
-        if y <= ly[0]:
-            return fr[0]
-        if y >= ly[-1]:
-            return fr[-1]
-        for s in range(1, len(ly)):
-            if ly[s] >= y:
-                span = ly[s] - ly[s - 1]
-                t = (y - ly[s - 1]) / span if span > 1e-9 else 0.0
-                return fr[s - 1] + t * (fr[s] - fr[s - 1])
-        return fr[-1]
-
-    def _reveal_anim(self, obj, elem_y):
-        """Fade an element in as the beam head approaches its z and out as it
-        passes, via keyframed object-color alpha (the ghost materials scale
-        their emission by it). A trapezoid in head-position needs only four
-        keyframes regardless of the timeline length."""
-        ahead, behind, fade = 5.0, 5.0, 2.5  # world-y units around the head
-        if elem_y - ahead > self._lead_y[-1] or elem_y + behind < self._lead_y[0]:
-            obj.color = (1.0, 1.0, 1.0, 0.0)  # head never gets near it
-            return
-        corners = [(elem_y - ahead, 0.0), (elem_y - ahead + fade, 1.0),
-                   (elem_y + behind - fade, 1.0), (elem_y + behind, 0.0)]
-        last_f = None
-        for y, v in corners:
-            f = int(round(self._frame_at_lead(y)))
-            if last_f is not None and f <= last_f:
-                f = last_f + 1
-            obj.color = (1.0, 1.0, 1.0, v)
-            obj.keyframe_insert("color", index=3, frame=f)
-            last_f = f
-        set_interpolation(obj.animation_data, "LINEAR")
-
-    # -- beam (real space) view ---------------------------------------------
 
     # -- beam (real space) view ---------------------------------------------
 
@@ -1071,6 +1068,7 @@ class Builder:
             target.location = tpath[s]
             target.keyframe_insert("location", frame=frame)
         set_interpolation(target.animation_data, "LINEAR")
+        self._beam_target = target  # head reference for --reveal-elements
 
         for b, beam in enumerate(self.beams):
             bcol = self.beam_collection(b)
@@ -1086,11 +1084,9 @@ class Builder:
                 move_to_collection(obj, bcol)
 
         # Per-sample framing radius: the transverse spread of the *currently
-        # propagating* bunch (axis-relative), over only the last few slices.
-        # Particles that have stopped/been left behind in z (span ended) are
-        # excluded, so a straggling tail never forces the camera to zoom out --
-        # the framing stays tight on the live head of the beam for detail.
-        W = 3  # most recent few time slices
+        # propagating* bunch (axis-relative). Particles that have stopped/been
+        # left behind in z (span ended) are excluded, so a straggling tail
+        # never forces the camera to zoom out.
         rad = [0.0] * S
         for beam in self.beams:
             spans, pos = beam["span"], beam["pos"]
@@ -1099,8 +1095,17 @@ class Builder:
                         for i, p in enumerate(pos[s]) if spans[i][0] <= s <= spans[i][1]]
                 if not vals:  # all stopped here: fall back to everything
                     vals = [(p[0] - cx0) ** 2 + (p[1] - cy0) ** 2 for p in pos[s]]
-                rad[s] = max(rad[s], math.sqrt(max(vals)))
-        fit_r = [max(rad[max(0, s - W):s + 1]) * s_trans + 0.05 for s in range(S)]
+                rad[s] = max(rad[s], math.sqrt(max(vals)) * s_trans + 0.05)
+        # Keep the zoom steady: grow promptly when the bunch needs more room
+        # but shrink only very slowly, so the level rarely changes. --fixed-zoom
+        # pins it to a single distance (the whole-run maximum) for zero changes.
+        if self.args.fixed_zoom:
+            fit_r = [max(rad)] * S
+        else:
+            env = [rad[0]]
+            for s in range(1, S):
+                env.append(max(rad[s], env[-1] * 0.992))  # ~0.8%/sample decay
+            fit_r = env
 
         # Two cameras on the real-space view: a 3/4 "flythrough" and an axial
         # one looking down the beam axis (best for seeing transverse rotation).
@@ -1129,7 +1134,6 @@ class Builder:
             "BeamRim", (-6.0 - ext_t, BEAM_LENGTH * 0.7, height + 1.5),
             target, size=12.0, power=1500, temperature=3900.0))
 
-        self._lead_y = lead_y  # for --reveal-elements head tracking
         self.build_elements(to_world, s_trans, s_long, self.cameras["beam"])
 
     # -- camera-locked HUD overlays -------------------------------------------
@@ -1340,6 +1344,14 @@ class Builder:
         els = self.data.get("elements")
         if not els:
             return
+        if self.args.reveal_elements:
+            # Rebuild the element materials now that the beam target exists, so
+            # the per-fragment head window (driven by the target) is wired up.
+            self.mats["elem_wire"] = self._ghost_emission_mat(
+                "BR_ElemWire", (0.25, 0.8, 1.0), 0.035)
+            self.mats["elem_label"] = self._ghost_emission_mat(
+                "BR_ElemLabel", (0.55, 0.85, 1.0), 0.7)
+            self._elem_solid_cache = {}
         if els.get("type") == "vrml":
             self._build_vrml_elements(els["meshes"], to_world)
         else:
@@ -1364,19 +1376,15 @@ class Builder:
         return solid, wire
 
     def _build_vrml_elements(self, meshes, to_world):
-        reveal = self.args.reveal_elements
         for k, m in enumerate(meshes):
             verts = [to_world(v) for v in m["verts"]]
-            elem_y = sum(v[1] for v in verts) / len(verts)  # world-y center
             name = m.get("name") or f"element_{k}"
             if m["faces"]:
                 mesh = bpy.data.meshes.new(f"elem_{k}_{name}")
                 mesh.from_pydata(verts, [], [tuple(f) for f in m["faces"]])
                 mesh.validate()
-                for obj in self._ghost_pair(f"elem_{k}_{name}", mesh,
-                                            m.get("color") or (0.3, 0.6, 0.9)):
-                    if reveal:
-                        self._reveal_anim(obj, elem_y)
+                self._ghost_pair(f"elem_{k}_{name}", mesh,
+                                 m.get("color") or (0.3, 0.6, 0.9))
             for poly in m["lines"]:
                 cu = bpy.data.curves.new(f"elem_{k}_{name}_lines", "CURVE")
                 cu.dimensions = "3D"
@@ -1386,10 +1394,8 @@ class Builder:
                 sp.points.add(len(poly) - 1)
                 for pt, vi in zip(sp.points, poly):
                     pt.co = (*verts[vi], 1.0)
-                obj = overlay_only(link(bpy.data.objects.new(
+                overlay_only(link(bpy.data.objects.new(
                     f"elem_{k}_{name}_lines", cu)))
-                if reveal:
-                    self._reveal_anim(obj, elem_y)
 
     def _build_csv_elements(self, items, to_world, s_trans, s_long, cam):
         for k, el in enumerate(items):
@@ -1421,12 +1427,9 @@ class Builder:
                 obj.location = center
             top = el["rout"] * s_trans if el["shape"] != "box" \
                 else el["height"] * s_trans
-            label = make_text(f"elem_{k}_label", el["name"], 0.28,
-                              center + Vector((0, 0, top + 0.45)),
-                              self.mats["elem_label"], target=cam)
-            if self.args.reveal_elements:
-                for obj in (solid, wire, label):
-                    self._reveal_anim(obj, center.y)
+            make_text(f"elem_{k}_label", el["name"], 0.28,
+                      center + Vector((0, 0, top + 0.45)),
+                      self.mats["elem_label"], target=cam)
 
     # -- phase-space stations ------------------------------------------------
 
