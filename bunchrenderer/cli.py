@@ -107,6 +107,10 @@ def build_parser():
     sc.add_argument("--elements-max-radius", type=float, default=1000.0, metavar="MM",
                     help="skip geometry shapes larger than this transverse "
                          "half-extent (filters out world/enclosure volumes)")
+    sc.add_argument("--reveal-elements", action="store_true",
+                    help="fade each beamline geometry element in as the beam "
+                         "head approaches it and out as it passes, so only the "
+                         "geometry near the beam is shown (needs --elements)")
     sc.add_argument("--no-hull", action="store_true",
                     help="skip the convex-hull envelope surfaces")
     sc.add_argument("--trails", type=int, default=0, metavar="N",
@@ -184,6 +188,8 @@ def _builder_args(args, data_path, blend_path, render_dir):
         out.append("--no-hull")
     if args.no_hud:
         out.append("--no-hud")
+    if args.reveal_elements:
+        out.append("--reveal-elements")
     if args.gpu:
         out.append("--gpu")
     if args.render:
