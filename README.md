@@ -313,8 +313,10 @@ bunchrender INPUT [INPUT2 ...] [-o out.blend]
   --views LIST            which views to build (default all)
   --elements FILE         beamline geometry: g4bl VRML (.wrl) or CSV
   --elements-max-radius MM  drop shapes wider than this (default 1000)
+  --reveal-elements       only the geometry around the beam head glows
   --no-hull               skip the convex-hull envelopes
   --trails N              real-space comet tails fading over N samples (0=off)
+  --fixed-zoom            hold the real-space camera at one zoom (no changes)
   --no-hud                skip the 2D sub-projection HUD panels
   --frames N --fps N      evolution length (default: auto from input granularity)
   --speed X               playback speed: <1 slower/longer, >1 faster
