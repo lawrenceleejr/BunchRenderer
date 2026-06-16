@@ -718,7 +718,7 @@ class Builder:
         # many layers of low-opacity beamline geometry.
         scene.cycles.transparent_max_bounces = 128
         scene.render.use_motion_blur = True
-        scene.render.motion_blur_shutter = 0.55
+        scene.render.motion_blur_shutter = 0.22
         scene.render.fps = self.args.fps
         scene.frame_start = 1
         scene.frame_end = self.total_frames
@@ -957,6 +957,7 @@ class Builder:
         # the camera dollies in and shrinks as it dollies out -- communicating
         # the zoom the way a fixed-world-size object near the bunch would.
         axmat, txmat = self.mats["axis"], self.mats["text"]
+        col = self.hud_collection(label)
         cam_rot = (-u).to_track_quat("-Z", "Y")
         pivot = bpy.data.objects.new(f"{label}_gizmo", None)
         link(pivot)
@@ -972,17 +973,22 @@ class Builder:
             pivot.keyframe_insert("scale", frame=frame)
         set_interpolation(pivot.animation_data, "LINEAR")
         alen = 0.10
-        make_arrow(f"{label}_ax_x", (0, 0, 0), (1, 0, 0), alen, 0.004, axmat, parent=pivot)
-        make_arrow(f"{label}_ax_y", (0, 0, 0), (0, 0, 1), alen, 0.004, axmat, parent=pivot)
-        make_arrow(f"{label}_ax_z", (0, 0, 0), (0, 1, 0), alen, 0.004, axmat, parent=pivot)
-        make_text(f"{label}_lbl_x", "x", 0.05, Vector((alen + 0.04, 0, 0)),
-                  txmat, target=cam, parent=pivot)
-        make_text(f"{label}_lbl_y", "y", 0.05, Vector((0, 0, alen + 0.04)),
-                  txmat, target=cam, parent=pivot)
-        make_text(f"{label}_lbl_z", "z", 0.05, Vector((0, alen + 0.04, 0)),
-                  txmat, target=cam, parent=pivot)
+        gizmo = [pivot,
+                 make_arrow(f"{label}_ax_x", (0, 0, 0), (1, 0, 0), alen, 0.004, axmat, parent=pivot),
+                 make_arrow(f"{label}_ax_y", (0, 0, 0), (0, 0, 1), alen, 0.004, axmat, parent=pivot),
+                 make_arrow(f"{label}_ax_z", (0, 0, 0), (0, 1, 0), alen, 0.004, axmat, parent=pivot),
+                 make_text(f"{label}_lbl_x", "x", 0.05, Vector((alen + 0.04, 0, 0)),
+                           txmat, target=cam, parent=pivot),
+                 make_text(f"{label}_lbl_y", "y", 0.05, Vector((0, 0, alen + 0.04)),
+                           txmat, target=cam, parent=pivot),
+                 make_text(f"{label}_lbl_z", "z", 0.05, Vector((0, alen + 0.04, 0)),
+                           txmat, target=cam, parent=pivot)]
+        # Put the tripod in this camera's HUD collection so set_active_hud
+        # shows only the active camera's gizmo (otherwise every camera's
+        # tripod renders at once).
+        for obj in gizmo:
+            move_to_collection(obj, col)
 
-        self.hud_collection(label)
         self.make_overlay(label, lens=float(lens))
         self.add_hud_text(label, f"{label}_title", title, 0.15, 0.0, 0.80, 4.5,
                           bold=True)
