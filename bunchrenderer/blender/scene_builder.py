@@ -75,6 +75,7 @@ def parse_args():
     p.add_argument("--no-hud", action="store_true")
     p.add_argument("--reveal-elements", action="store_true")
     p.add_argument("--fixed-zoom", action="store_true")
+    p.add_argument("--head-depth", type=float, default=0.2)
     p.add_argument("--gpu", action="store_true")
     p.add_argument("--fade-in", type=float, default=0.75)
     p.add_argument("--hold", type=float, default=0.5)
@@ -926,29 +927,32 @@ class Builder:
     # -- beam (real space) view ---------------------------------------------
 
     def _beam_camera(self, label, target, direction, lens, title, exag, dof,
-                     fit_r, ortho=False, up="UP_Y"):
+                     fit_r, ortho=False, up="UP_Y", head_window=None):
         """A real-space camera parented to the (straight-dollying) target. A
         perspective camera animates its distance per sample to frame fit_r[s]
         (the transverse radius to keep visible); an orthographic one animates
         its ortho scale instead. ``up`` is the TRACK_TO up axis -- use UP_Z for
-        a camera aimed straight along the beam axis (world Y)."""
+        a camera aimed straight along the beam axis (world Y). ``head_window``
+        (behind, ahead) clips the view to a depth window around the beam head,
+        so particles left behind in z drop out of an axial view."""
         u = Vector(direction).normalized()
         up_letter = up[-1]  # "UP_Z" -> "Z"
         k = lens / (18.0 * max(self.aspect, 1e-3))
+        ORTHO_D = 30.0       # fixed standoff for ortho cameras
 
         def dist(r):  # perspective distance that frames transverse radius r
-            return min(26.0 * k, max(0.45 * k, 1.2 * r * k))
+            return min(26.0 * k, max(0.45 * k, 1.45 * r * k))
 
         def oscale(r):  # ortho view width (BU) that frames radius r
-            return min(2.0 * 26.0 / self.aspect, max(2.0 * 0.45 / self.aspect,
-                       2.4 * r / self.aspect))
+            return min(2.0 * 26.0 / self.aspect, max(2.0 * 0.6 / self.aspect,
+                       3.2 * r / self.aspect))
 
         if ortho:
-            cam = make_camera(f"Cam_{label}", tuple(u * 30.0), target=target,
+            cam = make_camera(f"Cam_{label}", tuple(u * ORTHO_D), target=target,
                               lens=lens, up=up, ortho=True,
                               ortho_scale=oscale(fit_r[0]))
             cam.parent = target
-            cam.location = tuple(u * 30.0)   # fixed; framing is via ortho_scale
+            cam.location = tuple(u * ORTHO_D)  # fixed; framing is via ortho_scale
             cam.data.clip_end = 5000.0
             for s, frame in enumerate(self.sample_frames):
                 cam.data.ortho_scale = oscale(fit_r[s])
@@ -966,6 +970,17 @@ class Builder:
                 cam.data.dof.use_dof = True
                 cam.data.dof.focus_object = target
                 cam.data.dof.aperture_fstop = 4.0
+        if head_window is not None:
+            # Clip to a depth window around the head (camera is `D` behind it):
+            # particles further back than `behind` fall behind the near plane.
+            behind, ahead = head_window
+            for s, frame in enumerate(self.sample_frames):
+                d = ORTHO_D if ortho else dist(fit_r[s])
+                cam.data.clip_start = max(0.02, d - behind)
+                cam.data.clip_end = d + ahead
+                cam.data.keyframe_insert("clip_start", frame=frame)
+                cam.data.keyframe_insert("clip_end", frame=frame)
+            set_interpolation(cam.data.animation_data, "LINEAR")
         self.cameras[label] = cam
 
         # Axis tripod in this camera's lower-left (a pivot empty parented to
@@ -1134,16 +1149,21 @@ class Builder:
                 if not vals:  # all stopped here: fall back to everything
                     vals = [(p[0] - cx0) ** 2 + (p[1] - cy0) ** 2 for p in pos[s]]
                 rad[s] = max(rad[s], math.sqrt(max(vals)) * s_trans + 0.05)
-        # Keep the zoom steady: grow promptly when the bunch needs more room
-        # but shrink only very slowly, so the level rarely changes. --fixed-zoom
-        # pins it to a single distance (the whole-run maximum) for zero changes.
+        # Keep the zoom very steady: grow only on a real (>4%) increase, and
+        # then shrink almost imperceptibly, so the level holds for long
+        # stretches instead of tracking every fluctuation. --fixed-zoom pins it
+        # to the whole-run maximum (zero changes).
         if self.args.fixed_zoom:
             fit_r = [max(rad)] * S
         else:
-            env = [rad[0]]
+            held = rad[0]
+            fit_r = [held]
             for s in range(1, S):
-                env.append(max(rad[s], env[-1] * 0.992))  # ~0.8%/sample decay
-            fit_r = env
+                if rad[s] > held * 1.04:
+                    held = rad[s]                       # genuine growth
+                else:
+                    held = max(rad[s], held * 0.9985)   # ~0.15%/sample decay
+                fit_r.append(held)
 
         # Real-space cameras: a 3/4 "flythrough"; a near-axial "down the bore"
         # view; and two looking *straight* down the beam axis -- a perspective
@@ -1154,12 +1174,16 @@ class Builder:
         self._beam_camera("beam_axial", target, (0.45, -3.2, 0.32),
                           lens=40, title="Real space — axial (down the bore)",
                           exag=exag, dof=False, fit_r=fit_r)
+        # Axial (x, y) views clip to a depth window around the head so
+        # particles left behind in z drop out of view.
+        hw = (max(1.0, self.args.head_depth * BEAM_LENGTH), 0.07 * BEAM_LENGTH)
         self._beam_camera("beam_xy", target, (0.0, -1.0, 0.0),
                           lens=50, title="Transverse — perspective (x, y)",
-                          exag=exag, dof=False, fit_r=fit_r)
+                          exag=exag, dof=False, fit_r=fit_r, head_window=hw)
         self._beam_camera("beam_xy_ortho", target, (0.0, -1.0, 0.0),
                           lens=50, title="Transverse — orthographic (x, y)",
-                          exag=exag, dof=False, fit_r=fit_r, ortho=True)
+                          exag=exag, dof=False, fit_r=fit_r, ortho=True,
+                          head_window=hw)
 
         axmat = self.mats["axis"]
         # Straight reference axis at the nominal beamline (x = y = 0); off-axis

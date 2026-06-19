@@ -118,6 +118,10 @@ def build_parser():
     sc.add_argument("--fixed-zoom", action="store_true",
                     help="hold the real-space camera at a single zoom for the "
                          "whole flight (no zoom changes at all)")
+    sc.add_argument("--head-depth", type=float, default=0.2, metavar="FRAC",
+                    help="in the axial (x, y) views, the fraction of the "
+                         "beamline kept behind the beam head; particles further "
+                         "back than this drop out of view (default 0.2)")
     sc.add_argument("--no-hull", action="store_true",
                     help="skip the convex-hull envelope surfaces")
     sc.add_argument("--trails", type=int, default=0, metavar="N",
@@ -198,6 +202,7 @@ def _builder_args(args, data_path, blend_path, render_dir):
            "--views", args.views, "--cameras", args.cameras,
            "--trails", str(args.trails), "--tag", args.tag,
            "--render-frames", str(args.render_frames),
+           "--head-depth", str(args.head_depth),
            "--format", args.format, "--render-dir", str(render_dir)]
     if args.no_hull:
         out.append("--no-hull")
