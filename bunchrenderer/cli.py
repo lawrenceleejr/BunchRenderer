@@ -156,6 +156,13 @@ def build_parser():
     da.add_argument("--max-steps", type=int, default=None, metavar="N",
                     help="use only the first N time steps (rows) of each input "
                          "track, i.e. animate just the start of the trajectory")
+    da.add_argument("--per-step", action="store_true",
+                    help="full longitudinal granularity: one time sample (and "
+                         "one animation frame) per input time-step, capped to "
+                         "the first --per-step-seconds of motion. Overrides "
+                         "--frames/--time-samples")
+    da.add_argument("--per-step-seconds", type=float, default=60.0, metavar="SEC",
+                    help="length of the --per-step window (default 60)")
     da.add_argument("--max-particles", type=int, default=300,
                     help="cap on the number of particles kept in the scene")
     da.add_argument("--time-samples", type=int, default=None,
@@ -676,6 +683,10 @@ def main(argv=None):
     try:
         track_sets = [tracklib.load_tracks(p, drift_length=args.drift_length)
                       for p in in_paths]
+        # --per-step: full longitudinal granularity, one animation frame per
+        # input time-step, capped to the first --per-step-seconds of motion.
+        if args.per_step and args.max_steps is None:
+            args.max_steps = max(2, int(round(args.fps * args.per_step_seconds)))
         if args.max_steps is not None:
             if args.max_steps < 2:
                 raise SystemExit("error: --max-steps must be at least 2")
@@ -686,6 +697,12 @@ def main(argv=None):
             kept = max(len(tr["t"]) for ts in track_sets for tr in ts)
             print(f"[bunchrender] using the first {kept} step(s) of each track "
                   "(--max-steps)")
+            if args.per_step:
+                # one sample per kept input step, one frame per sample
+                args.time_samples = kept
+                args.frames = kept
+                print(f"[bunchrender] --per-step: {kept} time samples, {kept} "
+                      f"frames ({kept / args.fps:.1f} s at {args.fps} fps)")
         _auto_timing(args, track_sets)
         # Speed multiplier: <1 stretches the evolution over more frames (slower
         # motion, longer movie); >1 compresses it. The resampling grid is

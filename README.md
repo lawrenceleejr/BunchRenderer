@@ -251,6 +251,8 @@ both.
 |----|--------|----------|
 | `beam` | `Cam_beam` (follow-cam, motion blur, DoF) | bunch in real space + hull + ruler + elements |
 | `beam_axial` | `Cam_beam_axial` (down the bore) | same scene from the beam axis — shows transverse rotation |
+| `beam_xy` | `Cam_beam_xy` (straight down axis, perspective) | transverse (x, y) view, perspective |
+| `beam_xy_ortho` | `Cam_beam_xy_ortho` (straight down axis, orthographic) | flat transverse (x, y) view |
 | `xxpy` | `Cam_xxpy` (orbiting) | 3D projection (x, x′, y) of 4D phase space |
 | `xxpyp` | `Cam_xxpyp` (orbiting) | 3D projection (x, x′, y′) of 4D phase space |
 | `xyyp` | `Cam_xyyp` (orbiting) | 3D projection (x, y, y′) of 4D phase space |
@@ -325,6 +327,8 @@ bunchrender INPUT [INPUT2 ...] [-o out.blend]
   --samples N             Cycles samples (default 64, denoised)
   --resolution WxH        default 1920x1080
   --max-steps N           use only the first N time steps of each input track
+  --per-step              1 frame per input step (full z granularity), first
+                          --per-step-seconds (default 60) of motion
   --max-particles N       cap particles kept in the scene (default 300)
   --time-samples N        resampling grid (default: auto from input granularity)
   --drift-length MM       drift used for single-point-per-particle inputs
