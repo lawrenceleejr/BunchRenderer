@@ -118,10 +118,12 @@ def build_parser():
     sc.add_argument("--fixed-zoom", action="store_true",
                     help="hold the real-space camera at a single zoom for the "
                          "whole flight (no zoom changes at all)")
-    sc.add_argument("--head-depth", type=float, default=0.2, metavar="FRAC",
+    sc.add_argument("--head-depth", type=float, default=0.6, metavar="FRAC",
                     help="in the axial (x, y) views, the fraction of the "
                          "beamline kept behind the beam head; particles further "
-                         "back than this drop out of view (default 0.2)")
+                         "back than this drop out of view (default 0.6). The "
+                         "window is automatically deepened when needed so that "
+                         "comet --trails are always shown in full.")
     sc.add_argument("--no-hull", action="store_true",
                     help="skip the convex-hull envelope surfaces")
     sc.add_argument("--trails", type=int, default=0, metavar="N",

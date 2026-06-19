@@ -971,12 +971,16 @@ class Builder:
                 cam.data.dof.focus_object = target
                 cam.data.dof.aperture_fstop = 4.0
         if head_window is not None:
-            # Clip to a depth window around the head (camera is `D` behind it):
-            # particles further back than `behind` fall behind the near plane.
+            # Clip to a depth window around the head (camera is `d` in front of
+            # it): geometry further back than `behind` falls behind the near
+            # plane. ``behind`` may be a per-sample list (sized so the whole
+            # comet trail always stays in frame) or a single float.
             behind, ahead = head_window
+            blist = behind if isinstance(behind, (list, tuple)) else None
             for s, frame in enumerate(self.sample_frames):
                 d = ORTHO_D if ortho else dist(fit_r[s])
-                cam.data.clip_start = max(0.02, d - behind)
+                bk = blist[s] if blist is not None else behind
+                cam.data.clip_start = max(0.02, d - bk)
                 cam.data.clip_end = d + ahead
                 cam.data.keyframe_insert("clip_start", frame=frame)
                 cam.data.keyframe_insert("clip_end", frame=frame)
@@ -1174,9 +1178,35 @@ class Builder:
         self._beam_camera("beam_axial", target, (0.45, -3.2, 0.32),
                           lens=40, title="Real space — axial (down the bore)",
                           exag=exag, dof=False, fit_r=fit_r)
-        # Axial (x, y) views clip to a depth window around the head so
-        # particles left behind in z drop out of view.
-        hw = (max(1.0, self.args.head_depth * BEAM_LENGTH), 0.07 * BEAM_LENGTH)
+        # Axial (x, y) views clip to a depth window around the head so that
+        # particles left behind in z drop out of view. The window's near edge
+        # must always sit behind the furthest-back *visible trail* vertex, so a
+        # comet trail is shown in its entirety and never flickers as the head
+        # advances; --head-depth is a generous floor on that depth (used as-is
+        # when there are no trails).
+        ahead = 0.07 * BEAM_LENGTH
+        floor = max(1.0, self.args.head_depth * BEAM_LENGTH)
+        if self.args.trails > 0:
+            # Furthest-back world-Y reached by any particle at each sample
+            # (world Y = (z - zmin) * s_long, matching to_world()).
+            min_y = [min((p[2] - zmin) * s_long
+                         for beam in self.beams for p in beam["pos"][k])
+                     for k in range(S)]
+            prefix = []
+            cur = float("inf")
+            for v in min_y:
+                cur = min(cur, v)
+                prefix.append(cur)
+            # The trail trim reveals samples [s - trails, s]; the depth must
+            # reach the deepest vertex in that window (+ a small pad).
+            behind = []
+            for s in range(S):
+                k0 = max(0, s - self.args.trails)
+                m = prefix[s] if k0 == 0 else min(min_y[k0:s + 1])
+                behind.append(max(floor, lead_y[s] - m + 0.5))
+            hw = (behind, ahead)
+        else:
+            hw = (floor, ahead)
         self._beam_camera("beam_xy", target, (0.0, -1.0, 0.0),
                           lens=50, title="Transverse — perspective (x, y)",
                           exag=exag, dof=False, fit_r=fit_r, head_window=hw)
