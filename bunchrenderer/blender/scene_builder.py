@@ -988,7 +988,7 @@ class Builder:
             # window so it stays pinned in frame.
             for s, frame in enumerate(self.sample_frames):
                 h = oscale(fit_r[s]) * 0.5
-                pivot.location = (-0.78 * h, -0.78 * h * self.aspect, -5.0)
+                pivot.location = (-0.7 * h, -0.7 * h * self.aspect, -5.0)
                 pivot.keyframe_insert("location", frame=frame)
             set_interpolation(pivot.animation_data, "LINEAR")
         else:
@@ -1155,7 +1155,7 @@ class Builder:
                           exag=exag, dof=False, fit_r=fit_r)
         self._beam_camera("beam_xy", target, (0.0, -1.0, 0.0),
                           lens=50, title="Transverse — perspective (x, y)",
-                          exag=exag, dof=True, fit_r=fit_r)
+                          exag=exag, dof=False, fit_r=fit_r)
         self._beam_camera("beam_xy_ortho", target, (0.0, -1.0, 0.0),
                           lens=50, title="Transverse — orthographic (x, y)",
                           exag=exag, dof=False, fit_r=fit_r, ortho=True)
