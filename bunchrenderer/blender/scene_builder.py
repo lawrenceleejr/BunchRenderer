@@ -415,9 +415,14 @@ def make_empty(name, location):
     return link(obj)
 
 
-def make_camera(name, location, target=None, lens=50.0):
+def make_camera(name, location, target=None, lens=50.0, up="UP_Y",
+                ortho=False, ortho_scale=8.0):
     cd = bpy.data.cameras.new(name)
-    cd.lens = lens
+    if ortho:
+        cd.type = "ORTHO"
+        cd.ortho_scale = ortho_scale
+    else:
+        cd.lens = lens
     cam = bpy.data.objects.new(name, cd)
     cam.location = location
     link(cam)
@@ -425,7 +430,7 @@ def make_camera(name, location, target=None, lens=50.0):
         con = cam.constraints.new("TRACK_TO")
         con.target = target
         con.track_axis = "TRACK_NEGATIVE_Z"
-        con.up_axis = "UP_Y"
+        con.up_axis = up
     return cam
 
 
@@ -920,34 +925,46 @@ class Builder:
     # -- beam (real space) view ---------------------------------------------
 
     def _beam_camera(self, label, target, direction, lens, title, exag, dof,
-                     fit_r):
-        """A real-space camera parented to the (straight-dollying) target. Its
-        distance is animated per sample so the bunch *and its recent positions*
-        always fit the frame with margin -- ``fit_r[s]`` is the world-space
-        transverse radius (from the beam axis) that must be visible at sample
-        s. The aim stays straight down the corridor, so the camera zooms
-        (dollies) rather than corkscrews."""
+                     fit_r, ortho=False, up="UP_Y"):
+        """A real-space camera parented to the (straight-dollying) target. A
+        perspective camera animates its distance per sample to frame fit_r[s]
+        (the transverse radius to keep visible); an orthographic one animates
+        its ortho scale instead. ``up`` is the TRACK_TO up axis -- use UP_Z for
+        a camera aimed straight along the beam axis (world Y)."""
         u = Vector(direction).normalized()
-        # Vertical half-coverage at camera distance d is d*18*aspect/lens
-        # (36 mm sensor, auto-fit). Invert for the distance that frames fit_r,
-        # clamped so it never zooms in too far or flies absurdly out.
+        up_letter = up[-1]  # "UP_Z" -> "Z"
         k = lens / (18.0 * max(self.aspect, 1e-3))
-        d_min, d_max = 0.45 * k, 26.0 * k
 
-        def dist(r):
-            return min(d_max, max(d_min, 1.2 * r * k))
+        def dist(r):  # perspective distance that frames transverse radius r
+            return min(26.0 * k, max(0.45 * k, 1.2 * r * k))
 
-        cam = make_camera(f"Cam_{label}", tuple(u * dist(fit_r[0])),
-                          target=target, lens=lens)
-        cam.parent = target
-        for s, frame in enumerate(self.sample_frames):
-            cam.location = u * dist(fit_r[s])
-            cam.keyframe_insert("location", frame=frame)
-        set_interpolation(cam.animation_data, "LINEAR")
-        if dof:
-            cam.data.dof.use_dof = True
-            cam.data.dof.focus_object = target
-            cam.data.dof.aperture_fstop = 4.0
+        def oscale(r):  # ortho view width (BU) that frames radius r
+            return min(2.0 * 26.0 / self.aspect, max(2.0 * 0.45 / self.aspect,
+                       2.4 * r / self.aspect))
+
+        if ortho:
+            cam = make_camera(f"Cam_{label}", tuple(u * 30.0), target=target,
+                              lens=lens, up=up, ortho=True,
+                              ortho_scale=oscale(fit_r[0]))
+            cam.parent = target
+            cam.location = tuple(u * 30.0)   # fixed; framing is via ortho_scale
+            cam.data.clip_end = 5000.0
+            for s, frame in enumerate(self.sample_frames):
+                cam.data.ortho_scale = oscale(fit_r[s])
+                cam.data.keyframe_insert("ortho_scale", frame=frame)
+            set_interpolation(cam.data.animation_data, "LINEAR")
+        else:
+            cam = make_camera(f"Cam_{label}", tuple(u * dist(fit_r[0])),
+                              target=target, lens=lens, up=up)
+            cam.parent = target
+            for s, frame in enumerate(self.sample_frames):
+                cam.location = u * dist(fit_r[s])
+                cam.keyframe_insert("location", frame=frame)
+            set_interpolation(cam.animation_data, "LINEAR")
+            if dof:
+                cam.data.dof.use_dof = True
+                cam.data.dof.focus_object = target
+                cam.data.dof.aperture_fstop = 4.0
         self.cameras[label] = cam
 
         # Axis tripod in this camera's lower-left (a pivot empty parented to
@@ -958,20 +975,32 @@ class Builder:
         # the zoom the way a fixed-world-size object near the bunch would.
         axmat, txmat = self.mats["axis"], self.mats["text"]
         col = self.hud_collection(label)
-        cam_rot = (-u).to_track_quat("-Z", "Y")
+        cam_rot = (-u).to_track_quat("-Z", up_letter)
         pivot = bpy.data.objects.new(f"{label}_gizmo", None)
         link(pivot)
         pivot.parent = cam
         pivot.matrix_parent_inverse = Matrix.Identity(4)
-        pivot.location = (-0.42, -0.24, -1.6)  # camera-local: lower-left, front
         pivot.rotation_mode = "QUATERNION"
         pivot.rotation_quaternion = cam_rot.inverted()
-        d_ref = dist(sorted(fit_r)[len(fit_r) // 2])  # median distance
-        for s, frame in enumerate(self.sample_frames):
-            sc = min(1.4, max(0.25, d_ref / dist(fit_r[s])))
-            pivot.scale = (sc, sc, sc)
-            pivot.keyframe_insert("scale", frame=frame)
-        set_interpolation(pivot.animation_data, "LINEAR")
+        if ortho:
+            # Fixed world size (apparent size ~ 1/ortho_scale conveys zoom) at
+            # the lower-left corner, whose camera-local offset tracks the ortho
+            # window so it stays pinned in frame.
+            for s, frame in enumerate(self.sample_frames):
+                h = oscale(fit_r[s]) * 0.5
+                pivot.location = (-0.78 * h, -0.78 * h * self.aspect, -5.0)
+                pivot.keyframe_insert("location", frame=frame)
+            set_interpolation(pivot.animation_data, "LINEAR")
+        else:
+            # Pinned in front of the camera; scale animated inversely with the
+            # camera distance, so it grows on zoom-in and shrinks on zoom-out.
+            pivot.location = (-0.42, -0.24, -1.6)
+            d_ref = dist(sorted(fit_r)[len(fit_r) // 2])  # median distance
+            for s, frame in enumerate(self.sample_frames):
+                sc = min(1.4, max(0.25, d_ref / dist(fit_r[s])))
+                pivot.scale = (sc, sc, sc)
+                pivot.keyframe_insert("scale", frame=frame)
+            set_interpolation(pivot.animation_data, "LINEAR")
         alen = 0.10
         gizmo = [pivot,
                  make_arrow(f"{label}_ax_x", (0, 0, 0), (1, 0, 0), alen, 0.004, axmat, parent=pivot),
@@ -1115,14 +1144,21 @@ class Builder:
                 env.append(max(rad[s], env[-1] * 0.992))  # ~0.8%/sample decay
             fit_r = env
 
-        # Two cameras on the real-space view: a 3/4 "flythrough" and an axial
-        # one looking down the beam axis (best for seeing transverse rotation).
+        # Real-space cameras: a 3/4 "flythrough"; a near-axial "down the bore"
+        # view; and two looking *straight* down the beam axis -- a perspective
+        # and a flat orthographic transverse (x, y) view.
         self._beam_camera("beam", target, (-5.4, -8.2, 3.2),
                           lens=46, title="Real space — beam frame", exag=exag,
                           dof=True, fit_r=fit_r)
         self._beam_camera("beam_axial", target, (0.45, -3.2, 0.32),
                           lens=40, title="Real space — axial (down the bore)",
                           exag=exag, dof=False, fit_r=fit_r)
+        self._beam_camera("beam_xy", target, (0.0, -1.0, 0.0),
+                          lens=50, title="Transverse — perspective (x, y)",
+                          exag=exag, dof=True, fit_r=fit_r, up="UP_Z")
+        self._beam_camera("beam_xy_ortho", target, (0.0, -1.0, 0.0),
+                          lens=50, title="Transverse — orthographic (x, y)",
+                          exag=exag, dof=False, fit_r=fit_r, ortho=True, up="UP_Z")
 
         axmat = self.mats["axis"]
         # Straight reference axis at the nominal beamline (x = y = 0); off-axis

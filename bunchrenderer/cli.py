@@ -26,9 +26,10 @@ BLENDER_VERSION = "5.0.1"
 DEFAULT_IMAGE = f"bunchrenderer/blender:{BLENDER_VERSION}"
 
 VIEW_IDS = ["beam", "xxpy", "xxpyp", "xyyp", "xpyyp", "zpzx", "zpzy"]
-# beam_axial is an extra camera on the real-space view (down the beam axis),
-# not a separate view, so it is selectable for --cameras but not --views.
-CAMERA_IDS = VIEW_IDS + ["beam_axial", "overview"]
+# beam_axial / beam_xy / beam_xy_ortho are extra cameras on the real-space
+# view (looking down the beam axis), not separate views, so they are
+# selectable for --cameras but not --views.
+CAMERA_IDS = VIEW_IDS + ["beam_axial", "beam_xy", "beam_xy_ortho", "overview"]
 
 
 def _pkg_path(*parts):
