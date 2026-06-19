@@ -118,6 +118,10 @@ def build_parser():
     sc.add_argument("--fixed-zoom", action="store_true",
                     help="hold the real-space camera at a single zoom for the "
                          "whole flight (no zoom changes at all)")
+    sc.add_argument("--zoom-hold", type=float, default=5.0, metavar="SEC",
+                    help="minimum time the real-space zoom is held before it may "
+                         "change, so it steps occasionally instead of hunting "
+                         "(default 5; 0 disables the hold)")
     sc.add_argument("--head-depth", type=float, default=0.6, metavar="FRAC",
                     help="in the axial (x, y) views, the fraction of the "
                          "beamline kept behind the beam head; particles further "
@@ -205,6 +209,7 @@ def _builder_args(args, data_path, blend_path, render_dir):
            "--trails", str(args.trails), "--tag", args.tag,
            "--render-frames", str(args.render_frames),
            "--head-depth", str(args.head_depth),
+           "--zoom-hold", str(args.zoom_hold),
            "--format", args.format, "--render-dir", str(render_dir)]
     if args.no_hull:
         out.append("--no-hull")

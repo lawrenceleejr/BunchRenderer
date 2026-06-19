@@ -320,6 +320,7 @@ bunchrender INPUT [INPUT2 ...] [-o out.blend]
   --no-hull               skip the convex-hull envelopes
   --trails N              real-space comet tails fading over N samples (0=off)
   --fixed-zoom            hold the real-space camera at one zoom (no changes)
+  --zoom-hold SEC         min time the zoom is held before it may step (default 5)
   --head-depth FRAC       axial (x, y) views: depth kept behind the head, as a
                           fraction of the beamline (default 0.6); auto-deepened
                           so comet --trails always show in full

@@ -75,7 +75,8 @@ def parse_args():
     p.add_argument("--no-hud", action="store_true")
     p.add_argument("--reveal-elements", action="store_true")
     p.add_argument("--fixed-zoom", action="store_true")
-    p.add_argument("--head-depth", type=float, default=0.2)
+    p.add_argument("--zoom-hold", type=float, default=5.0)
+    p.add_argument("--head-depth", type=float, default=0.6)
     p.add_argument("--gpu", action="store_true")
     p.add_argument("--fade-in", type=float, default=0.75)
     p.add_argument("--hold", type=float, default=0.5)
@@ -1153,21 +1154,31 @@ class Builder:
                 if not vals:  # all stopped here: fall back to everything
                     vals = [(p[0] - cx0) ** 2 + (p[1] - cy0) ** 2 for p in pos[s]]
                 rad[s] = max(rad[s], math.sqrt(max(vals)) * s_trans + 0.05)
-        # Keep the zoom very steady: grow only on a real (>4%) increase, and
-        # then shrink almost imperceptibly, so the level holds for long
-        # stretches instead of tracking every fluctuation. --fixed-zoom pins it
-        # to the whole-run maximum (zero changes).
-        if self.args.fixed_zoom:
+        # Keep the zoom from hunting: quantize changes to at most one per
+        # --zoom-hold seconds of animation. The timeline is cut into blocks of
+        # that length and each block holds a single framing radius (the block's
+        # max, so the bunch always fits); between blocks the level only steps
+        # when the bunch grows past it or has shrunk comfortably (<85%), so it
+        # never drifts continuously. --fixed-zoom pins one level for the whole
+        # run (zero changes).
+        if self.args.fixed_zoom or S <= 1:
             fit_r = [max(rad)] * S
         else:
-            held = rad[0]
-            fit_r = [held]
-            for s in range(1, S):
-                if rad[s] > held * 1.04:
-                    held = rad[s]                       # genuine growth
-                else:
-                    held = max(rad[s], held * 0.9985)   # ~0.15%/sample decay
-                fit_r.append(held)
+            block_frames = max(1.0, self.args.zoom_hold * self.args.fps)
+            f0 = self.sample_frames[0]
+            block_of = [int((self.sample_frames[s] - f0) // block_frames)
+                        for s in range(S)]
+            nblocks = block_of[-1] + 1
+            block_max = [1e-9] * nblocks
+            for s in range(S):
+                block_max[block_of[s]] = max(block_max[block_of[s]], rad[s])
+            held = block_max[0]
+            level = [held]
+            for bi in range(1, nblocks):
+                if block_max[bi] > held or block_max[bi] < held * 0.85:
+                    held = block_max[bi]
+                level.append(held)
+            fit_r = [level[block_of[s]] for s in range(S)]
 
         # Real-space cameras: a 3/4 "flythrough"; a near-axial "down the bore"
         # view; and two looking *straight* down the beam axis -- a perspective
