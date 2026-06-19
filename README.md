@@ -308,6 +308,7 @@ bunchrender INPUT [INPUT2 ...] [-o out.blend]
   --timestamp/--no-timestamp  tag outputs (incl. MP4 names) with run
                           timestamp+commit hash so nothing clobbers (default on)
   --cameras LIST          cameras to render (default all)
+  --render-frames N       render only the first N frames (0 = all)
   --format mp4|png|both   movie per camera, PNG frame folders, or both
   --gpu                   render on the GPU (Metal/CUDA/OptiX/HIP/oneAPI)
   --lq                    quick draft (12 samples, 960x540, beam cam, GPU)
