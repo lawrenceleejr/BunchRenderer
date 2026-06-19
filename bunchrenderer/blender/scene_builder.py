@@ -1155,10 +1155,10 @@ class Builder:
                           exag=exag, dof=False, fit_r=fit_r)
         self._beam_camera("beam_xy", target, (0.0, -1.0, 0.0),
                           lens=50, title="Transverse — perspective (x, y)",
-                          exag=exag, dof=True, fit_r=fit_r, up="UP_Z")
+                          exag=exag, dof=True, fit_r=fit_r)
         self._beam_camera("beam_xy_ortho", target, (0.0, -1.0, 0.0),
                           lens=50, title="Transverse — orthographic (x, y)",
-                          exag=exag, dof=False, fit_r=fit_r, ortho=True, up="UP_Z")
+                          exag=exag, dof=False, fit_r=fit_r, ortho=True)
 
         axmat = self.mats["axis"]
         # Straight reference axis at the nominal beamline (x = y = 0); off-axis
