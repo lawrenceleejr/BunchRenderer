@@ -72,6 +72,9 @@ def build_parser():
     rd.add_argument("--render", action="store_true",
                     help="headless mode: render the animation after building the "
                          "scene (default: only produce the .blend file)")
+    rd.add_argument("--render-frames", type=int, default=0, metavar="N",
+                    help="render only the first N frames of the animation "
+                         "(0 = all); the .blend still holds the full timeline")
     rd.add_argument("--render-dir", default=None, metavar="DIR",
                     help="where to put rendered output (default: <output stem>_renders)")
     rd.add_argument("--timestamp", action=argparse.BooleanOptionalAction,
@@ -194,6 +197,7 @@ def _builder_args(args, data_path, blend_path, render_dir):
            "--samples", str(args.samples), "--resolution", args.resolution,
            "--views", args.views, "--cameras", args.cameras,
            "--trails", str(args.trails), "--tag", args.tag,
+           "--render-frames", str(args.render_frames),
            "--format", args.format, "--render-dir", str(render_dir)]
     if args.no_hull:
         out.append("--no-hull")
@@ -644,8 +648,19 @@ def main(argv=None):
     # `pip install .` snapshots the package, so after `git pull` a stale
     # install is the usual cause of "I'm still seeing the old bug".
     print(f"[bunchrender] {__version__} running from {_pkg_path()}")
+    # --views also accepts the beam-only camera ids (beam_axial, beam_xy,
+    # beam_xy_ortho) as a convenience: they build the real-space view and, if
+    # --cameras wasn't given, become the cameras to render. So
+    # `--views beam_xy_ortho` just renders that camera.
+    beam_cams = [c for c in CAMERA_IDS if c.startswith("beam_")]
+    args.views = _validate_csv_list(args.views, VIEW_IDS + beam_cams, "--views")
+    if args.views != "all":
+        tokens = args.views.split(",")
+        if args.cameras is None:
+            args.cameras = ",".join(dict.fromkeys(tokens))
+        args.views = ",".join(dict.fromkeys(
+            "beam" if t in beam_cams else t for t in tokens))
     _apply_quality_defaults(args)
-    args.views = _validate_csv_list(args.views, VIEW_IDS, "--views")
     args.cameras = _validate_csv_list(args.cameras, CAMERA_IDS, "--cameras")
     args.max_particles = max(4, args.max_particles)
 

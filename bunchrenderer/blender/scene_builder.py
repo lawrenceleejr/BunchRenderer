@@ -80,6 +80,7 @@ def parse_args():
     p.add_argument("--hold", type=float, default=0.5)
     p.add_argument("--fade-out", type=float, default=1.5)
     p.add_argument("--render", action="store_true")
+    p.add_argument("--render-frames", type=int, default=0)
     p.add_argument("--render-dir", default="renders")
     p.add_argument("--tag", default="")  # run timestamp/hash for MP4 filenames
     p.add_argument("--format", choices=("mp4", "png", "both"), default="mp4")
@@ -1669,6 +1670,11 @@ class Builder:
                   else [c for c in self.args.cameras.split(",") if c])
         rdir = os.path.abspath(self.args.render_dir)
         os.makedirs(rdir, exist_ok=True)
+        # Optionally render only the first N frames (the .blend keeps the full
+        # timeline; this just limits what gets written this run).
+        if self.args.render_frames > 0:
+            scene.frame_end = min(self.total_frames,
+                                  scene.frame_start + self.args.render_frames - 1)
         present = [w for w in wanted if w in self.cameras]
         print(f"[scene_builder] render plan: {len(present)} camera(s) x "
               f"{scene.frame_end - scene.frame_start + 1} frames", flush=True)
