@@ -263,11 +263,16 @@ def trail_node_group(name, f_on, evo, n_samples, trails, material):
     tail = math("SUBTRACT", b=float(trails))            # oldest kept sample
     ng.links.new(head_c.outputs[0], tail.inputs[0])
 
-    # Drop control points outside [tail, head] (index resets per spline).
+    # Drop control points outside [tail, head] (index resets per spline). The
+    # head keeps up to ceil(sample) so the live (interpolated) particle always
+    # sits on the trail's leading segment -- no gap between the dot and its
+    # comet head -- while the trail still never drifts past the particle.
+    head_ceil = math("CEIL")
+    ng.links.new(head_c.outputs[0], head_ceil.inputs[0])
     sp = ng.nodes.new("GeometryNodeSplineParameter")
     after = math("GREATER_THAN")                        # index > head -> future
     ng.links.new(sp.outputs["Index"], after.inputs[0])
-    ng.links.new(head_c.outputs[0], after.inputs[1])
+    ng.links.new(head_ceil.outputs[0], after.inputs[1])
     before = math("LESS_THAN")                          # index < tail -> too old
     ng.links.new(sp.outputs["Index"], before.inputs[0])
     ng.links.new(tail.outputs[0], before.inputs[1])
