@@ -77,6 +77,7 @@ def parse_args():
     p.add_argument("--fixed-zoom", action="store_true")
     p.add_argument("--zoom-hold", type=float, default=5.0)
     p.add_argument("--head-depth", type=float, default=0.6)
+    p.add_argument("--dead-distance", type=float, default=30.0)
     p.add_argument("--gpu", action="store_true")
     p.add_argument("--fade-in", type=float, default=0.75)
     p.add_argument("--hold", type=float, default=0.5)
@@ -222,12 +223,15 @@ def hull_node_group(name, material):
     return ng
 
 
-def trail_node_group(name, f_on, evo, window, material):
-    """Geometry nodes that reveal a curve as a comet trail synced to the
-    timeline: a Trim Curve whose [start, end] factors track the current
-    frame, so every particle path shows only its most recent ``window``
-    fraction (>=1 traces the whole history). All splines trim together, so
-    the trails stay in lock-step with the bunch."""
+def trail_node_group(name, f_on, evo, n_samples, trails, material):
+    """Geometry nodes that reveal each particle's path as a comet trail synced
+    to the timeline. The trail is trimmed by *control-point index* -- one point
+    per time sample -- rather than by arc length, so the head of every trail
+    sits on the particle's current sample (exactly where the animated point
+    cloud is) and stays locked to it for the whole flight. (Trimming by factor
+    uses normalized arc length, which drifts away from the particle because each
+    spline has a different length.) Only the most recent ``trails`` samples are
+    kept; a very large value traces the whole history."""
     ng = bpy.data.node_groups.new(name, "GeometryNodeTree")
     _iface_socket(ng, "Geometry", "INPUT", "NodeSocketGeometry")
     _iface_socket(ng, "Geometry", "OUTPUT", "NodeSocketGeometry")
@@ -244,32 +248,45 @@ def trail_node_group(name, f_on, evo, window, material):
             n.inputs[1].default_value = b
         return n
 
-    # factor = clamp((frame - f_on) / evo, 0, 1)  -> head of the trail
-    sub = math("SUBTRACT", b=float(f_on))
-    div = math("DIVIDE", b=float(max(evo, 1)))
-    end = ng.nodes.new("ShaderNodeClamp")
-    ng.links.new(tnode.outputs["Frame"], sub.inputs[0])
-    ng.links.new(sub.outputs[0], div.inputs[0])
-    ng.links.new(div.outputs[0], end.inputs["Value"])
-    # start = clamp(factor - window, 0, 1)  -> tail of the trail
-    start_sub = math("SUBTRACT", b=float(window))
-    start = ng.nodes.new("ShaderNodeClamp")
-    ng.links.new(div.outputs[0], start_sub.inputs[0])
-    ng.links.new(start_sub.outputs[0], start.inputs["Value"])
+    # head sample = (frame - f_on) * (n_samples - 1) / (evo - 1), matching the
+    # cloud's eval_time mapping; clamp to the valid range so the trail holds
+    # (doesn't unravel) once the flight ends.
+    scale = (n_samples - 1) / max(evo - 1, 1)
+    elapsed = math("SUBTRACT", b=float(f_on))
+    ng.links.new(tnode.outputs["Frame"], elapsed.inputs[0])
+    head = math("MULTIPLY", b=float(scale))
+    ng.links.new(elapsed.outputs[0], head.inputs[0])
+    head_c = ng.nodes.new("ShaderNodeClamp")
+    head_c.inputs["Min"].default_value = 0.0
+    head_c.inputs["Max"].default_value = float(n_samples - 1)
+    ng.links.new(head.outputs[0], head_c.inputs["Value"])
+    tail = math("SUBTRACT", b=float(trails))            # oldest kept sample
+    ng.links.new(head_c.outputs[0], tail.inputs[0])
 
-    trim = ng.nodes.new("GeometryNodeTrimCurve")  # FACTOR mode by default
-    # Build the tube *inside* the node tree (the curve datablock's bevel is
-    # applied to the untrimmed curve, so it would ignore the trim).
+    # Drop control points outside [tail, head] (index resets per spline).
+    sp = ng.nodes.new("GeometryNodeSplineParameter")
+    after = math("GREATER_THAN")                        # index > head -> future
+    ng.links.new(sp.outputs["Index"], after.inputs[0])
+    ng.links.new(head_c.outputs[0], after.inputs[1])
+    before = math("LESS_THAN")                          # index < tail -> too old
+    ng.links.new(sp.outputs["Index"], before.inputs[0])
+    ng.links.new(tail.outputs[0], before.inputs[1])
+    drop = math("MAXIMUM")                              # logical OR
+    ng.links.new(after.outputs[0], drop.inputs[0])
+    ng.links.new(before.outputs[0], drop.inputs[1])
+    dele = ng.nodes.new("GeometryNodeDeleteGeometry")
+    dele.domain = "POINT"
+    ng.links.new(nin.outputs[0], dele.inputs["Geometry"])
+    ng.links.new(drop.outputs[0], dele.inputs["Selection"])
+
+    # Build the tube on the trimmed curve.
     circle = ng.nodes.new("GeometryNodeCurvePrimitiveCircle")
     circle.inputs["Resolution"].default_value = 6
     circle.inputs["Radius"].default_value = 0.0015
     c2m = ng.nodes.new("GeometryNodeCurveToMesh")
     smat = ng.nodes.new("GeometryNodeSetMaterial")
     smat.inputs["Material"].default_value = material
-    ng.links.new(nin.outputs[0], trim.inputs["Curve"])
-    ng.links.new(start.outputs[0], trim.inputs[2])  # Start (factor)
-    ng.links.new(end.outputs[0], trim.inputs[3])     # End (factor)
-    ng.links.new(trim.outputs["Curve"], c2m.inputs["Curve"])
+    ng.links.new(dele.outputs[0], c2m.inputs["Curve"])
     ng.links.new(circle.outputs["Curve"], c2m.inputs["Profile Curve"])
     ng.links.new(c2m.outputs["Mesh"], smat.inputs["Geometry"])
     ng.links.new(smat.outputs["Geometry"], nout.inputs[0])
@@ -1064,16 +1081,51 @@ class Builder:
                 sp.points[s].co = (c[0], c[1], c[2], 1.0)
         obj = bpy.data.objects.new(f"beam_b{b}_trail", cu)
         link(obj)
-        window = min(1.0, self.args.trails / max(self.S - 1, 1))
         mod = obj.modifiers.new("Trail", "NODES")
         mod.node_group = trail_node_group(
-            f"beam_b{b}_trailgn", 1 + self.fade_in_f, self.evo_frames, window,
-            self.mats[f"trail{b}"])
+            f"beam_b{b}_trailgn", 1 + self.fade_in_f, self.evo_frames,
+            self.S, self.args.trails, self.mats[f"trail{b}"])
         try:
             obj.cycles.use_deform_motion = False
         except AttributeError:
             pass
         return obj
+
+    def _dead_cull_group(self, name, thresh):
+        """Geometry nodes that delete particles which have fallen more than
+        ``thresh`` world units behind the beam head along z: they are considered
+        dead and drop out of the render. The head's world-Y is read live from
+        the BeamTarget via a driver, so the cull tracks the moving head."""
+        ng = bpy.data.node_groups.new(name, "GeometryNodeTree")
+        _iface_socket(ng, "Geometry", "INPUT", "NodeSocketGeometry")
+        _iface_socket(ng, "Geometry", "OUTPUT", "NodeSocketGeometry")
+        nin = ng.nodes.new("NodeGroupInput")
+        nout = ng.nodes.new("NodeGroupOutput")
+        pos = ng.nodes.new("GeometryNodeInputPosition")
+        sep = ng.nodes.new("ShaderNodeSeparateXYZ")
+        ng.links.new(pos.outputs["Position"], sep.inputs[0])
+        # behind = head_worldY - particle_worldY  (beam travels along +Y)
+        behind = ng.nodes.new("ShaderNodeMath")
+        behind.operation = "SUBTRACT"
+        ng.links.new(sep.outputs["Y"], behind.inputs[1])
+        fc = behind.inputs[0].driver_add("default_value")
+        fc.driver.type = "AVERAGE"  # single var, no scripted expression
+        var = fc.driver.variables.new()
+        var.type = "TRANSFORMS"
+        tg = var.targets[0]
+        tg.id = self._beam_target
+        tg.transform_type = "LOC_Y"
+        tg.transform_space = "WORLD_SPACE"
+        dead = ng.nodes.new("ShaderNodeMath")
+        dead.operation = "GREATER_THAN"
+        ng.links.new(behind.outputs[0], dead.inputs[0])
+        dead.inputs[1].default_value = float(thresh)
+        dele = ng.nodes.new("GeometryNodeDeleteGeometry")
+        dele.domain = "POINT"
+        ng.links.new(nin.outputs[0], dele.inputs["Geometry"])
+        ng.links.new(dead.outputs[0], dele.inputs["Selection"])
+        ng.links.new(dele.outputs[0], nout.inputs[0])
+        return ng
 
     def build_beam_view(self):
         S = self.S
@@ -1136,6 +1188,12 @@ class Builder:
                 radius=0.01125, particle_mat=self.mats[f"particle{b}"],
                 hull_mat=self.mats[f"hull{b}"], with_hull=self.with_hull,
                 spans=beam["span"])
+            if self.args.dead_distance > 0:
+                # cm -> mm -> world units along z
+                thresh = self.args.dead_distance * 10.0 * s_long
+                cull = objs[0].modifiers.new("DeadCull", "NODES")
+                cull.node_group = self._dead_cull_group(
+                    f"beam_b{b}_deadcull", thresh)
             if self.args.trails > 0:
                 objs.append(self._build_trails(b, coords))
             for obj in objs:

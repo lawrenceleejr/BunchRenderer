@@ -324,6 +324,8 @@ bunchrender INPUT [INPUT2 ...] [-o out.blend]
   --head-depth FRAC       axial (x, y) views: depth kept behind the head, as a
                           fraction of the beamline (default 0.6); auto-deepened
                           so comet --trails always show in full
+  --dead-distance CM      particles >CM behind the head (along z) are dead and
+                          removed from the render (default 30; 0 = off)
   --no-hud                skip the 2D sub-projection HUD panels
   --frames N --fps N      evolution length (default: auto from input granularity)
   --speed X               playback speed: <1 slower/longer, >1 faster

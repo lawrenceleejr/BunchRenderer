@@ -128,6 +128,10 @@ def build_parser():
                          "back than this drop out of view (default 0.6). The "
                          "window is automatically deepened when needed so that "
                          "comet --trails are always shown in full.")
+    sc.add_argument("--dead-distance", type=float, default=30.0, metavar="CM",
+                    help="particles that fall more than this many cm behind the "
+                         "beam head (along z) are considered dead and removed "
+                         "from the render (default 30; 0 disables)")
     sc.add_argument("--no-hull", action="store_true",
                     help="skip the convex-hull envelope surfaces")
     sc.add_argument("--trails", type=int, default=0, metavar="N",
@@ -210,6 +214,7 @@ def _builder_args(args, data_path, blend_path, render_dir):
            "--render-frames", str(args.render_frames),
            "--head-depth", str(args.head_depth),
            "--zoom-hold", str(args.zoom_hold),
+           "--dead-distance", str(args.dead_distance),
            "--format", args.format, "--render-dir", str(render_dir)]
     if args.no_hull:
         out.append("--no-hull")
