@@ -74,7 +74,8 @@ def parse_args():
     p.add_argument("--trails", type=int, default=0)
     p.add_argument("--no-hud", action="store_true")
     p.add_argument("--reveal-elements", action="store_true")
-    p.add_argument("--reveal-ahead", type=float, default=10.0)
+    p.add_argument("--reveal-ahead", type=float, default=100.0)
+    p.add_argument("--reveal-behind", type=float, default=100.0)
     p.add_argument("--fixed-zoom", action="store_true")
     p.add_argument("--zoom-hold", type=float, default=5.0)
     p.add_argument("--head-depth", type=float, default=0.6)
@@ -896,15 +897,18 @@ class Builder:
         emit.inputs["Color"].default_value = (*color, 1.0)
         target = getattr(self, "_beam_target", None)
         if self.args.reveal_elements and target is not None:
-            # Window the glow to a short stretch *ahead* of the bunch head: an
-            # element appears ~reveal_ahead cm in front of the head, brightens as
-            # it nears, then fades out so it is gone by the time it reaches the
-            # head's z -- it never sits between the camera and the beam in an
-            # axial view. d = fragment_worldY - head_worldY  (>0 ahead of head).
+            # Window the glow to a stretch around the bunch head: an element
+            # appears ~reveal_ahead cm in front of the head, brightens as it
+            # nears, stays lit while it passes, and only fades out once it falls
+            # ~reveal_behind cm behind the head -- so it whooshes toward the
+            # camera and lingers a moment before vanishing, without ever
+            # permanently blocking the beam. d = fragment_worldY - head_worldY
+            # (beam travels along +Y, so d > 0 is ahead of the head).
             w = 10.0 * getattr(self, "_s_long", 1.0)   # world units per cm
             ahead = max(0.02, self.args.reveal_ahead * w)
+            behind = max(0.0, self.args.reveal_behind * w)
             fade_in = max(0.01, 0.35 * ahead)          # gradual appearance
-            fade_out = max(0.01, 0.15 * ahead)         # quick fade at the head
+            fade_out = max(0.01, 0.15 * ahead)         # fade once well behind
             geo = nt.nodes.new("ShaderNodeNewGeometry")
             sep = nt.nodes.new("ShaderNodeSeparateXYZ")
             nt.links.new(geo.outputs["Position"], sep.inputs[0])
@@ -926,9 +930,13 @@ class Builder:
             upn = nt.nodes.new("ShaderNodeMath"); upn.operation = "DIVIDE"
             nt.links.new(up.outputs[0], upn.inputs[0])
             upn.inputs[1].default_value = fade_in
-            # trailing fade-out: d / fade_out  (1 ahead, 0 at the head, <0 behind)
+            # trailing fade-out: (d + behind) / fade_out
+            #   1 while d > -behind+fade_out, 0 at d=-behind, <0 further back.
+            db = nt.nodes.new("ShaderNodeMath"); db.operation = "ADD"
+            nt.links.new(d.outputs[0], db.inputs[0])
+            db.inputs[1].default_value = behind             # d + behind
             dnn = nt.nodes.new("ShaderNodeMath"); dnn.operation = "DIVIDE"
-            nt.links.new(d.outputs[0], dnn.inputs[0])
+            nt.links.new(db.outputs[0], dnn.inputs[0])
             dnn.inputs[1].default_value = fade_out
             win = nt.nodes.new("ShaderNodeMath"); win.operation = "MINIMUM"
             nt.links.new(upn.outputs[0], win.inputs[0])

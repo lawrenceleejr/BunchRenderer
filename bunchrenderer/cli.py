@@ -108,18 +108,23 @@ def build_parser():
                     help="beamline geometry superimposed on the real-space view: "
                          "a VRML 1.0 .wrl exported by g4beamline (viewer=VRML1FILE) "
                          "or a simple CSV (see README)")
-    sc.add_argument("--elements-max-radius", type=float, default=1000.0, metavar="MM",
+    sc.add_argument("--elements-max-radius", type=float, default=10000.0, metavar="MM",
                     help="skip geometry shapes larger than this transverse "
-                         "half-extent (filters out world/enclosure volumes)")
+                         "half-extent (filters out world/enclosure volumes; "
+                         "default 10000 mm = 10 m)")
     sc.add_argument("--reveal-elements", action="store_true",
-                    help="geometry glows only as it approaches the beam head and "
-                         "fades out by the time it reaches the head's z, so it "
-                         "whooshes past without ever blocking the beam (needs "
-                         "--elements)")
-    sc.add_argument("--reveal-ahead", type=float, default=10.0, metavar="CM",
+                    help="geometry glows only around the beam head -- it brightens "
+                         "as it approaches, stays lit while it passes, then fades "
+                         "out once it falls behind, so it whooshes past without "
+                         "ever permanently blocking the beam (needs --elements)")
+    sc.add_argument("--reveal-ahead", type=float, default=100.0, metavar="CM",
                     help="with --reveal-elements, how far ahead of the bunch head "
-                         "(cm) an element starts to glow before fading out at the "
-                         "head (default 10)")
+                         "(cm) an element starts to glow as it approaches "
+                         "(default 100 = 1 m)")
+    sc.add_argument("--reveal-behind", type=float, default=100.0, metavar="CM",
+                    help="with --reveal-elements, how far behind the bunch head "
+                         "(cm) an element stays lit before fading out "
+                         "(default 100 = 1 m)")
     sc.add_argument("--fixed-zoom", action="store_true",
                     help="hold the real-space camera at a single zoom for the "
                          "whole flight (no zoom changes at all)")
@@ -221,6 +226,7 @@ def _builder_args(args, data_path, blend_path, render_dir):
            "--zoom-hold", str(args.zoom_hold),
            "--dead-distance", str(args.dead_distance),
            "--reveal-ahead", str(args.reveal_ahead),
+           "--reveal-behind", str(args.reveal_behind),
            "--format", args.format, "--render-dir", str(render_dir)]
     if args.no_hull:
         out.append("--no-hull")

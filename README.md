@@ -224,8 +224,8 @@ with thin emissive wireframes. The ghost shells are purely additive (a
 transparent shader plus a soft emission, with no Fresnel/specular), so they
 only add a gentle glow and **never occlude the beam** — particles stay fully
 visible even on-axis inside a pipe bore or buried in many nested volumes.
-Shapes wider than `--elements-max-radius` (default 1000 mm) are dropped so
-enclosure/world volumes don't swallow the scene.
+Shapes wider than `--elements-max-radius` (default 10000 mm = 10 m) are dropped
+so enclosure/world volumes don't swallow the scene.
 
 **Hand-written CSV** for quick sketches (`examples/beamline_elements.csv`):
 
@@ -315,12 +315,15 @@ bunchrender INPUT [INPUT2 ...] [-o out.blend]
   --llq                   even lower/faster draft (4 samples, 640x360, no fades)
   --views LIST            which views to build (default all)
   --elements FILE         beamline geometry: g4bl VRML (.wrl) or CSV
-  --elements-max-radius MM  drop shapes wider than this (default 1000)
-  --reveal-elements       geometry glows only as it approaches the head and
-                          fades out by the head's z, so it whooshes past without
-                          ever blocking the beam
+  --elements-max-radius MM  drop shapes wider than this (default 10000 = 10 m)
+  --reveal-elements       geometry glows only around the head — brightening as it
+                          approaches, staying lit as it passes, then fading once
+                          it falls behind, so it whooshes past without ever
+                          permanently blocking the beam
   --reveal-ahead CM       how far ahead of the head an element starts to glow
-                          (default 10; needs --reveal-elements)
+                          (default 100 = 1 m; needs --reveal-elements)
+  --reveal-behind CM      how far behind the head an element stays lit before
+                          fading out (default 100 = 1 m; needs --reveal-elements)
   --no-hull               skip the convex-hull envelopes
   --trails N              real-space comet tails fading over N samples (0=off)
   --fixed-zoom            hold the real-space camera at one zoom (no changes)
