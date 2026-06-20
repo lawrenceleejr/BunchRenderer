@@ -1305,7 +1305,11 @@ class Builder:
         # orbits sweep around it. The current z is shown by the HUD readout, so
         # no in-scene z-tick labels (which the moving camera would smear).
         origin = Vector(to_world((0.0, 0.0, zmin)))
-        make_arrow("beam_ax_z", origin, (0, 1, 0), BEAM_LENGTH + 1.5, 0.016, axmat)
+        # Held so the render loop can hide it in the pure down-the-bore views
+        # (beam_xy / beam_xy_ortho), where it points straight at the camera and
+        # balloons to fill the frame, blocking the beam.
+        self._ref_axis = make_arrow("beam_ax_z", origin, (0, 1, 0),
+                                    BEAM_LENGTH + 1.5, 0.016, axmat)
 
         # Corridor lighting: warm key lights along the flight path with a
         # slightly cooler (but still warm) rim from the side.
@@ -1912,6 +1916,14 @@ class Builder:
                 continue
             scene.camera = cam
             self.set_active_hud(label)
+            # The straight reference axis runs along the beam direction (world
+            # Y); in the pure transverse (down-the-bore) views it points right
+            # at the camera and balloons to fill the frame, so hide it there.
+            ref = getattr(self, "_ref_axis", None)
+            if ref is not None:
+                hide = label in ("beam_xy", "beam_xy_ortho")
+                ref.hide_render = hide
+                ref.hide_viewport = hide
             self._clean_camera_outputs(rdir, label, fmt)
             # MP4 filename carries the run tag (timestamp + commit hash) so the
             # movie is self-identifying even moved out of its folder.
