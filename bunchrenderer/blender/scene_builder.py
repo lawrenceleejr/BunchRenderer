@@ -74,6 +74,7 @@ def parse_args():
     p.add_argument("--trails", type=int, default=0)
     p.add_argument("--no-hud", action="store_true")
     p.add_argument("--reveal-elements", action="store_true")
+    p.add_argument("--reveal-ahead", type=float, default=10.0)
     p.add_argument("--fixed-zoom", action="store_true")
     p.add_argument("--zoom-hold", type=float, default=5.0)
     p.add_argument("--head-depth", type=float, default=0.6)
@@ -895,7 +896,15 @@ class Builder:
         emit.inputs["Color"].default_value = (*color, 1.0)
         target = getattr(self, "_beam_target", None)
         if self.args.reveal_elements and target is not None:
-            ahead, behind, fade = 2.5, 2.5, 2.0  # world units around the head
+            # Window the glow to a short stretch *ahead* of the bunch head: an
+            # element appears ~reveal_ahead cm in front of the head, brightens as
+            # it nears, then fades out so it is gone by the time it reaches the
+            # head's z -- it never sits between the camera and the beam in an
+            # axial view. d = fragment_worldY - head_worldY  (>0 ahead of head).
+            w = 10.0 * getattr(self, "_s_long", 1.0)   # world units per cm
+            ahead = max(0.02, self.args.reveal_ahead * w)
+            fade_in = max(0.01, 0.35 * ahead)          # gradual appearance
+            fade_out = max(0.01, 0.15 * ahead)         # quick fade at the head
             geo = nt.nodes.new("ShaderNodeNewGeometry")
             sep = nt.nodes.new("ShaderNodeSeparateXYZ")
             nt.links.new(geo.outputs["Position"], sep.inputs[0])
@@ -910,21 +919,22 @@ class Builder:
             tg.id = target
             tg.transform_type = "LOC_Y"
             tg.transform_space = "WORLD_SPACE"
-            # trapezoid window: min((ahead - d)/fade, (d + behind)/fade) clamped
+            # leading fade-in:  (ahead - d) / fade_in   (0 at d=ahead, 1 below it)
             up = nt.nodes.new("ShaderNodeMath"); up.operation = "SUBTRACT"
             up.inputs[0].default_value = ahead
             nt.links.new(d.outputs[0], up.inputs[1])           # ahead - d
-            dn = nt.nodes.new("ShaderNodeMath"); dn.operation = "ADD"
-            dn.inputs[1].default_value = behind
-            nt.links.new(d.outputs[0], dn.inputs[0])           # d + behind
+            upn = nt.nodes.new("ShaderNodeMath"); upn.operation = "DIVIDE"
+            nt.links.new(up.outputs[0], upn.inputs[0])
+            upn.inputs[1].default_value = fade_in
+            # trailing fade-out: d / fade_out  (1 ahead, 0 at the head, <0 behind)
+            dnn = nt.nodes.new("ShaderNodeMath"); dnn.operation = "DIVIDE"
+            nt.links.new(d.outputs[0], dnn.inputs[0])
+            dnn.inputs[1].default_value = fade_out
             win = nt.nodes.new("ShaderNodeMath"); win.operation = "MINIMUM"
-            nt.links.new(up.outputs[0], win.inputs[0])
-            nt.links.new(dn.outputs[0], win.inputs[1])
-            scal = nt.nodes.new("ShaderNodeMath"); scal.operation = "DIVIDE"
-            nt.links.new(win.outputs[0], scal.inputs[0])
-            scal.inputs[1].default_value = fade
+            nt.links.new(upn.outputs[0], win.inputs[0])
+            nt.links.new(dnn.outputs[0], win.inputs[1])
             clamp = nt.nodes.new("ShaderNodeClamp")
-            nt.links.new(scal.outputs[0], clamp.inputs["Value"])
+            nt.links.new(win.outputs[0], clamp.inputs["Value"])
             mul = nt.nodes.new("ShaderNodeMath"); mul.operation = "MULTIPLY"
             nt.links.new(clamp.outputs[0], mul.inputs[0])
             mul.inputs[1].default_value = strength
@@ -1138,6 +1148,7 @@ class Builder:
         zs = [p[2] for beam in self.beams for row in beam["pos"] for p in row]
         zmin, zmax = min(zs), max(zs)
         s_long = BEAM_LENGTH / max(zmax - zmin, 1e-9)
+        self._s_long = s_long  # mm -> world along z (for the reveal head window)
 
         # Decompose transverse motion: "spread" is each bunch's size around
         # its own traveling centroid; "orbit" is how far any beam's centroid

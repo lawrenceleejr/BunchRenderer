@@ -112,9 +112,14 @@ def build_parser():
                     help="skip geometry shapes larger than this transverse "
                          "half-extent (filters out world/enclosure volumes)")
     sc.add_argument("--reveal-elements", action="store_true",
-                    help="only the geometry right around the beam head glows "
-                         "(per-fragment fade keyed to the head position); the "
-                         "rest stays dark (needs --elements)")
+                    help="geometry glows only as it approaches the beam head and "
+                         "fades out by the time it reaches the head's z, so it "
+                         "whooshes past without ever blocking the beam (needs "
+                         "--elements)")
+    sc.add_argument("--reveal-ahead", type=float, default=10.0, metavar="CM",
+                    help="with --reveal-elements, how far ahead of the bunch head "
+                         "(cm) an element starts to glow before fading out at the "
+                         "head (default 10)")
     sc.add_argument("--fixed-zoom", action="store_true",
                     help="hold the real-space camera at a single zoom for the "
                          "whole flight (no zoom changes at all)")
@@ -215,6 +220,7 @@ def _builder_args(args, data_path, blend_path, render_dir):
            "--head-depth", str(args.head_depth),
            "--zoom-hold", str(args.zoom_hold),
            "--dead-distance", str(args.dead_distance),
+           "--reveal-ahead", str(args.reveal_ahead),
            "--format", args.format, "--render-dir", str(render_dir)]
     if args.no_hull:
         out.append("--no-hull")
