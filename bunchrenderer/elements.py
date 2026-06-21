@@ -39,9 +39,19 @@ class ElementsError(ValueError):
 # VRML 1.0 (g4beamline `viewer=VRML1FILE` output)
 
 def _vrml_tokens(text):
-    # Drop comment lines (incl. the "#VRML V1.0 ascii" header itself).
-    body = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
-    return re.findall(r"[{}\[\]]|[^\s{}\[\],]+", body)
+    # Drop comment lines (incl. the "#VRML V1.0 ascii" header itself), but
+    # g4beamline records each volume's name only in a comment of the form
+    #   #---------- SOLID: wedge0:0
+    # (there is no DEF), so lift that name into a synthetic "__SOLID__ <name>"
+    # token pair that load_vrml() can pick up like a DEF.
+    lines = []
+    for line in text.splitlines():
+        code, _, comment = line.partition("#")
+        m = re.search(r"SOLID:\s*(\S+)", comment)
+        if m:
+            code = f"__SOLID__ {m.group(1)} {code}"
+        lines.append(code)
+    return re.findall(r"[{}\[\]]|[^\s{}\[\],]+", "\n".join(lines))
 
 
 def _collect_floats(tokens, i):
@@ -78,7 +88,7 @@ def load_vrml(path):
     i = 0
     while i < len(tokens):
         tok = tokens[i]
-        if tok == "DEF" and i + 1 < len(tokens):
+        if tok in ("DEF", "__SOLID__") and i + 1 < len(tokens):
             name = tokens[i + 1]
             i += 2
             continue
