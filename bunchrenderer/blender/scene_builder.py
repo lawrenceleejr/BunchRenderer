@@ -867,24 +867,83 @@ class Builder:
         self.mats["hud_backdrop"] = make_material(
             "BR_HudBackdrop", (0.005, 0.006, 0.01), roughness=1.0, alpha=0.6)
         # Beamline elements: ghostly solid + thin emissive wireframe (and a
-        # name label for CSV). All are non-occluding additive shells, kept very
-        # faint so the geometry never competes with the beam. In --reveal mode
-        # these are (re)built in build_elements, once the beam target exists.
+        # name label for CSV). The ordinary geometry is kept *extremely* faint
+        # so it never competes with the beam -- only wedge absorbers (names
+        # starting "wedge") get the brighter wire + near-solid wedge material.
+        # In --reveal mode these are (re)built in build_elements, once the beam
+        # target exists.
         if not self.args.reveal_elements:
             self.mats["elem_wire"] = self._ghost_emission_mat(
-                "BR_ElemWire", (0.25, 0.8, 1.0), 0.035)
+                "BR_ElemWire", (0.25, 0.8, 1.0), 0.010)
+            self.mats["elem_wire_wedge"] = self._ghost_emission_mat(
+                "BR_ElemWireWedge", (0.45, 0.95, 1.0), 0.9)
             self.mats["elem_label"] = self._ghost_emission_mat(
                 "BR_ElemLabel", (0.55, 0.85, 1.0), 0.7)
         self._elem_solid_cache = {}
+        self._wedge_solid_cache = {}
+
+    def _reveal_window(self, nt):
+        """Build the per-fragment reveal window in node tree ``nt`` and return
+        the socket carrying its value (0 outside, ramping to 1 across a
+        trapezoid around the beam head), or ``None`` when --reveal-elements is
+        off or the beam target isn't ready yet. An element appears
+        ~reveal_ahead cm in front of the head, brightens as it nears, stays at
+        full while it passes, then fades out once it falls ~reveal_behind cm
+        behind the head -- so it whooshes toward the camera and lingers a moment
+        before vanishing, without ever permanently blocking the beam.
+        d = fragment_worldY - head_worldY (beam travels along +Y, so d > 0 is
+        ahead of the head)."""
+        target = getattr(self, "_beam_target", None)
+        if not (self.args.reveal_elements and target is not None):
+            return None
+        w = 10.0 * getattr(self, "_s_long", 1.0)   # world units per cm
+        ahead = max(0.02, self.args.reveal_ahead * w)
+        behind = max(0.0, self.args.reveal_behind * w)
+        fade_in = max(0.01, 0.35 * ahead)          # gradual appearance
+        fade_out = max(0.01, 0.15 * ahead)         # fade once well behind
+        geo = nt.nodes.new("ShaderNodeNewGeometry")
+        sep = nt.nodes.new("ShaderNodeSeparateXYZ")
+        nt.links.new(geo.outputs["Position"], sep.inputs[0])
+        # d = fragment_worldY - head_worldY  (beam travels along +Y)
+        d = nt.nodes.new("ShaderNodeMath"); d.operation = "SUBTRACT"
+        nt.links.new(sep.outputs["Y"], d.inputs[0])
+        fc = d.inputs[1].driver_add("default_value")
+        fc.driver.type = "AVERAGE"  # single var, no scripted expression
+        var = fc.driver.variables.new()
+        var.type = "TRANSFORMS"
+        tg = var.targets[0]
+        tg.id = target
+        tg.transform_type = "LOC_Y"
+        tg.transform_space = "WORLD_SPACE"
+        # leading fade-in:  (ahead - d) / fade_in   (0 at d=ahead, 1 below it)
+        up = nt.nodes.new("ShaderNodeMath"); up.operation = "SUBTRACT"
+        up.inputs[0].default_value = ahead
+        nt.links.new(d.outputs[0], up.inputs[1])           # ahead - d
+        upn = nt.nodes.new("ShaderNodeMath"); upn.operation = "DIVIDE"
+        nt.links.new(up.outputs[0], upn.inputs[0])
+        upn.inputs[1].default_value = fade_in
+        # trailing fade-out: (d + behind) / fade_out
+        #   1 while d > -behind+fade_out, 0 at d=-behind, <0 further back.
+        db = nt.nodes.new("ShaderNodeMath"); db.operation = "ADD"
+        nt.links.new(d.outputs[0], db.inputs[0])
+        db.inputs[1].default_value = behind             # d + behind
+        dnn = nt.nodes.new("ShaderNodeMath"); dnn.operation = "DIVIDE"
+        nt.links.new(db.outputs[0], dnn.inputs[0])
+        dnn.inputs[1].default_value = fade_out
+        win = nt.nodes.new("ShaderNodeMath"); win.operation = "MINIMUM"
+        nt.links.new(upn.outputs[0], win.inputs[0])
+        nt.links.new(dnn.outputs[0], win.inputs[1])
+        clamp = nt.nodes.new("ShaderNodeClamp")
+        nt.links.new(win.outputs[0], clamp.inputs["Value"])
+        return clamp.outputs[0]
 
     def _ghost_emission_mat(self, name, color, strength):
         """Non-occluding ghost material: a pure Transparent BSDF (passes 100%
-        of whatever is behind, no Fresnel/specular, so it never hides the
-        beam) plus a faint additive Emission shell. With --reveal-elements (and
-        once the beam target exists) the emission is windowed *per fragment* by
-        the fragment's world position along the beam axis relative to the beam
-        head, so only the geometry right around the head glows -- even for long
-        elements that span much of the corridor."""
+        of whatever is behind, no Fresnel/specular, so it never hides the beam)
+        plus a faint additive Emission shell. With --reveal-elements the
+        emission is windowed *per fragment* (see _reveal_window) so only the
+        geometry around the head glows -- even for long elements that span much
+        of the corridor."""
         color = tuple(round(c, 4) for c in color)
         mat = bpy.data.materials.new(name)
         mat.use_nodes = True
@@ -895,56 +954,10 @@ class Builder:
         transp = nt.nodes.new("ShaderNodeBsdfTransparent")
         emit = nt.nodes.new("ShaderNodeEmission")
         emit.inputs["Color"].default_value = (*color, 1.0)
-        target = getattr(self, "_beam_target", None)
-        if self.args.reveal_elements and target is not None:
-            # Window the glow to a stretch around the bunch head: an element
-            # appears ~reveal_ahead cm in front of the head, brightens as it
-            # nears, stays lit while it passes, and only fades out once it falls
-            # ~reveal_behind cm behind the head -- so it whooshes toward the
-            # camera and lingers a moment before vanishing, without ever
-            # permanently blocking the beam. d = fragment_worldY - head_worldY
-            # (beam travels along +Y, so d > 0 is ahead of the head).
-            w = 10.0 * getattr(self, "_s_long", 1.0)   # world units per cm
-            ahead = max(0.02, self.args.reveal_ahead * w)
-            behind = max(0.0, self.args.reveal_behind * w)
-            fade_in = max(0.01, 0.35 * ahead)          # gradual appearance
-            fade_out = max(0.01, 0.15 * ahead)         # fade once well behind
-            geo = nt.nodes.new("ShaderNodeNewGeometry")
-            sep = nt.nodes.new("ShaderNodeSeparateXYZ")
-            nt.links.new(geo.outputs["Position"], sep.inputs[0])
-            # d = fragment_worldY - head_worldY  (beam travels along +Y)
-            d = nt.nodes.new("ShaderNodeMath"); d.operation = "SUBTRACT"
-            nt.links.new(sep.outputs["Y"], d.inputs[0])
-            fc = d.inputs[1].driver_add("default_value")
-            fc.driver.type = "AVERAGE"  # single var, no scripted expression
-            var = fc.driver.variables.new()
-            var.type = "TRANSFORMS"
-            tg = var.targets[0]
-            tg.id = target
-            tg.transform_type = "LOC_Y"
-            tg.transform_space = "WORLD_SPACE"
-            # leading fade-in:  (ahead - d) / fade_in   (0 at d=ahead, 1 below it)
-            up = nt.nodes.new("ShaderNodeMath"); up.operation = "SUBTRACT"
-            up.inputs[0].default_value = ahead
-            nt.links.new(d.outputs[0], up.inputs[1])           # ahead - d
-            upn = nt.nodes.new("ShaderNodeMath"); upn.operation = "DIVIDE"
-            nt.links.new(up.outputs[0], upn.inputs[0])
-            upn.inputs[1].default_value = fade_in
-            # trailing fade-out: (d + behind) / fade_out
-            #   1 while d > -behind+fade_out, 0 at d=-behind, <0 further back.
-            db = nt.nodes.new("ShaderNodeMath"); db.operation = "ADD"
-            nt.links.new(d.outputs[0], db.inputs[0])
-            db.inputs[1].default_value = behind             # d + behind
-            dnn = nt.nodes.new("ShaderNodeMath"); dnn.operation = "DIVIDE"
-            nt.links.new(db.outputs[0], dnn.inputs[0])
-            dnn.inputs[1].default_value = fade_out
-            win = nt.nodes.new("ShaderNodeMath"); win.operation = "MINIMUM"
-            nt.links.new(upn.outputs[0], win.inputs[0])
-            nt.links.new(dnn.outputs[0], win.inputs[1])
-            clamp = nt.nodes.new("ShaderNodeClamp")
-            nt.links.new(win.outputs[0], clamp.inputs["Value"])
+        win = self._reveal_window(nt)
+        if win is not None:
             mul = nt.nodes.new("ShaderNodeMath"); mul.operation = "MULTIPLY"
-            nt.links.new(clamp.outputs[0], mul.inputs[0])
+            nt.links.new(win, mul.inputs[0])
             mul.inputs[1].default_value = strength
             nt.links.new(mul.outputs[0], emit.inputs["Strength"])
         else:
@@ -954,6 +967,51 @@ class Builder:
         nt.links.new(add.outputs[0], out.inputs["Surface"])
         return mat
 
+    def _wedge_mat(self, name, color, opacity=0.8, emit_strength=2.0):
+        """Wedge absorbers are the key physics elements, so they read far more
+        strongly than the (barely-there) rest of the geometry: a near-solid
+        surface -- ``opacity`` 0.8 means only 20% transparent -- tinted with the
+        wedge's color and given a strong emissive lift so it pops regardless of
+        the corridor lighting. With --reveal-elements the *opacity* is windowed
+        like the ghosts, so the wedge still whooshes past the head rather than
+        sitting permanently in front of the beam."""
+        color = tuple(round(c, 4) for c in color)
+        mat = bpy.data.materials.new(name)
+        mat.use_nodes = True
+        nt = mat.node_tree
+        nt.nodes.clear()
+        out = nt.nodes.new("ShaderNodeOutputMaterial")
+        mix = nt.nodes.new("ShaderNodeMixShader")
+        transp = nt.nodes.new("ShaderNodeBsdfTransparent")
+        solid = nt.nodes.new("ShaderNodeBsdfPrincipled")
+        set_input(solid, ("Base Color",), (*color, 1.0))
+        set_input(solid, ("Roughness",), 0.35)
+        set_input(solid, ("Emission Color", "Emission"), (*color, 1.0))
+        set_input(solid, ("Emission Strength",), emit_strength)
+        nt.links.new(transp.outputs[0], mix.inputs[1])   # Fac=0 -> transparent
+        nt.links.new(solid.outputs[0], mix.inputs[2])    # Fac=1 -> solid
+        win = self._reveal_window(nt)
+        if win is not None:
+            mul = nt.nodes.new("ShaderNodeMath"); mul.operation = "MULTIPLY"
+            nt.links.new(win, mul.inputs[0])
+            mul.inputs[1].default_value = opacity
+            nt.links.new(mul.outputs[0], mix.inputs["Fac"])
+        else:
+            mix.inputs["Fac"].default_value = opacity
+        nt.links.new(mix.outputs[0], out.inputs["Surface"])
+        return mat
+
+    def wedge_solid_material(self, color):
+        """Bright near-solid wedge material, cached by color (built lazily so it
+        picks up the reveal window once the beam target exists)."""
+        key = tuple(round(c, 3) for c in color)
+        mat = self._wedge_solid_cache.get(key)
+        if mat is None:
+            mat = self._wedge_mat(
+                f"BR_Wedge_{len(self._wedge_solid_cache)}", key)
+            self._wedge_solid_cache[key] = mat
+        return mat
+
     def elem_solid_material(self, color):
         """Faint additive ghost shell for an element's solid, tinted by its
         own color (cached by color)."""
@@ -961,7 +1019,7 @@ class Builder:
         mat = self._elem_solid_cache.get(key)
         if mat is None:
             mat = self._ghost_emission_mat(
-                f"BR_ElemSolid_{len(self._elem_solid_cache)}", key, 0.0025)
+                f"BR_ElemSolid_{len(self._elem_solid_cache)}", key, 0.0008)
             self._elem_solid_cache[key] = mat
         return mat
 
@@ -1544,28 +1602,35 @@ class Builder:
             # Rebuild the element materials now that the beam target exists, so
             # the per-fragment head window (driven by the target) is wired up.
             self.mats["elem_wire"] = self._ghost_emission_mat(
-                "BR_ElemWire", (0.25, 0.8, 1.0), 0.035)
+                "BR_ElemWire", (0.25, 0.8, 1.0), 0.010)
+            self.mats["elem_wire_wedge"] = self._ghost_emission_mat(
+                "BR_ElemWireWedge", (0.45, 0.95, 1.0), 0.9)
             self.mats["elem_label"] = self._ghost_emission_mat(
                 "BR_ElemLabel", (0.55, 0.85, 1.0), 0.7)
             self._elem_solid_cache = {}
+            self._wedge_solid_cache = {}
         if els.get("type") == "vrml":
             self._build_vrml_elements(els["meshes"], to_world)
         else:
             self._build_csv_elements(els["items"], to_world, s_trans, s_long, cam)
 
-    def _ghost_pair(self, name, mesh, color):
-        """Solid translucent object + brighter wireframe overlay (tron look)."""
+    def _ghost_pair(self, name, mesh, color, wedge=False):
+        """Solid translucent object + brighter wireframe overlay (tron look).
+        ``wedge`` swaps in the near-solid wedge material + brighter wire so the
+        key absorber geometry stands out strongly from the faint rest."""
         smooth_mesh(mesh)
         solid = bpy.data.objects.new(name, mesh)
-        mesh.materials.append(self.elem_solid_material(color))
+        mesh.materials.append(self.wedge_solid_material(color) if wedge
+                              else self.elem_solid_material(color))
         link(solid)
         wire_mesh = mesh.copy()
         wire_mesh.materials.clear()
-        wire_mesh.materials.append(self.mats["elem_wire"])
+        wire_mesh.materials.append(self.mats["elem_wire_wedge"] if wedge
+                                   else self.mats["elem_wire"])
         wire = bpy.data.objects.new(f"{name}_wire", wire_mesh)
         link(wire)
         mod = wire.modifiers.new("Wireframe", "WIREFRAME")
-        mod.thickness = 0.006
+        mod.thickness = 0.012 if wedge else 0.006
         mod.use_replace = True
         for obj in (solid, wire):
             overlay_only(obj)  # don't let ghosts cast shadows on the beam
@@ -1575,17 +1640,19 @@ class Builder:
         for k, m in enumerate(meshes):
             verts = [to_world(v) for v in m["verts"]]
             name = m.get("name") or f"element_{k}"
+            wedge = name.lower().startswith("wedge")
             if m["faces"]:
                 mesh = bpy.data.meshes.new(f"elem_{k}_{name}")
                 mesh.from_pydata(verts, [], [tuple(f) for f in m["faces"]])
                 mesh.validate()
                 self._ghost_pair(f"elem_{k}_{name}", mesh,
-                                 m.get("color") or (0.3, 0.6, 0.9))
+                                 m.get("color") or (0.3, 0.6, 0.9), wedge=wedge)
             for poly in m["lines"]:
                 cu = bpy.data.curves.new(f"elem_{k}_{name}_lines", "CURVE")
                 cu.dimensions = "3D"
-                cu.bevel_depth = 0.006
-                cu.materials.append(self.mats["elem_wire"])
+                cu.bevel_depth = 0.012 if wedge else 0.006
+                cu.materials.append(self.mats["elem_wire_wedge"] if wedge
+                                    else self.mats["elem_wire"])
                 sp = cu.splines.new("POLY")
                 sp.points.add(len(poly) - 1)
                 for pt, vi in zip(sp.points, poly):
@@ -1617,8 +1684,9 @@ class Builder:
             mesh = bpy.data.meshes.new(f"elem_{k}_{el['name']}")
             bm.to_mesh(mesh)
             bm.free()
+            wedge = str(el.get("name", "")).lower().startswith("wedge")
             solid, wire = self._ghost_pair(f"elem_{k}_{el['name']}", mesh,
-                                           (0.20, 0.45, 0.85))
+                                           (0.20, 0.45, 0.85), wedge=wedge)
             for obj in (solid, wire):
                 obj.location = center
             top = el["rout"] * s_trans if el["shape"] != "box" \

@@ -227,6 +227,13 @@ visible even on-axis inside a pipe bore or buried in many nested volumes.
 Shapes wider than `--elements-max-radius` (default 10000 mm = 10 m) are dropped
 so enclosure/world volumes don't swallow the scene.
 
+**Wedge absorbers stand out.** The ordinary geometry is kept *extremely* faint
+so it never competes with the beam, but any shape whose name starts with
+`wedge` (case-insensitive) gets a brighter wireframe and a near-solid material
+(only ~20% transparent), since the wedges are the key physics elements. With
+`--reveal-elements` the wedge's opacity is windowed like the rest, so it still
+whooshes past the head instead of sitting permanently in front of the beam.
+
 **Hand-written CSV** for quick sketches (`examples/beamline_elements.csv`):
 
 ```csv
