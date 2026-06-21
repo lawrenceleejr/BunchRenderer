@@ -1472,7 +1472,6 @@ class Builder:
         main camera's (constant) view rotation makes the arrows project exactly
         as the in-scene tripod used to -- but unlit and free of depth-of-field.
         The size animates to convey the zoom (grows on zoom-in)."""
-        ov_cam = ov.camera
         axmat, txmat = self.mats["ov_axis"], self.mats["text"]
         cam_rot = (-u).to_track_quat("-Z", up_letter)  # constant camera view rot
         pivot = bpy.data.objects.new(f"{label}_gizmo", None)
@@ -1493,17 +1492,25 @@ class Builder:
             pivot.keyframe_insert("scale", frame=frame)
         set_interpolation(pivot.animation_data, "LINEAR")
         alen = 0.12
-        objs = [pivot,
-                make_arrow(f"{label}_ax_x", (0, 0, 0), (1, 0, 0), alen, 0.006, axmat, parent=pivot),
-                make_arrow(f"{label}_ax_y", (0, 0, 0), (0, 0, 1), alen, 0.006, axmat, parent=pivot),
-                make_arrow(f"{label}_ax_z", (0, 0, 0), (0, 1, 0), alen, 0.006, axmat, parent=pivot),
-                make_text(f"{label}_lbl_x", "x", 0.06, Vector((alen + 0.05, 0, 0)),
-                          txmat, target=ov_cam, parent=pivot),
-                make_text(f"{label}_lbl_y", "y", 0.06, Vector((0, 0, alen + 0.05)),
-                          txmat, target=ov_cam, parent=pivot),
-                make_text(f"{label}_lbl_z", "z", 0.06, Vector((0, alen + 0.05, 0)),
-                          txmat, target=ov_cam, parent=pivot)]
-        for obj in objs:
+        arrows = [
+            make_arrow(f"{label}_ax_x", (0, 0, 0), (1, 0, 0), alen, 0.006, axmat, parent=pivot),
+            make_arrow(f"{label}_ax_y", (0, 0, 0), (0, 0, 1), alen, 0.006, axmat, parent=pivot),
+            make_arrow(f"{label}_ax_z", (0, 0, 0), (0, 1, 0), alen, 0.006, axmat, parent=pivot),
+        ]
+        # Labels sit at the (rotated) arrow tips but are counter-rotated back to
+        # world identity so they face the fixed -Z overlay camera, upright. A
+        # TRACK_TO toward that camera is degenerate (its track axis lines up with
+        # the world up reference), which tumbles the glyphs.
+        labels = []
+        for nm, off in (("x", (alen + 0.05, 0, 0)),
+                        ("y", (0, 0, alen + 0.05)),
+                        ("z", (0, alen + 0.05, 0))):
+            t = make_text(f"{label}_lbl_{nm}", nm, 0.06, Vector(off),
+                          txmat, parent=pivot)
+            t.rotation_mode = "QUATERNION"
+            t.rotation_quaternion = cam_rot  # cancels the pivot's rotation
+            labels.append(t)
+        for obj in [pivot] + arrows + labels:
             self._to_overlay(obj, ov)
         return pivot
 
