@@ -583,6 +583,19 @@ def set_interpolation(animdata, mode):
             kp.interpolation = mode
 
 
+def _smooth_series(seq, win):
+    """Centered moving average of half-width ``win`` (edges clamp). Applied a
+    couple of times it turns a stepped sequence into smooth ramps."""
+    n = len(seq)
+    if win < 1 or n == 0:
+        return list(seq)
+    out = [0.0] * n
+    for i in range(n):
+        lo, hi = max(0, i - win), min(n - 1, i + win)
+        out[i] = sum(seq[lo:hi + 1]) / (hi - lo + 1)
+    return out
+
+
 def move_to_collection(obj, col):
     for c in list(obj.users_collection):
         c.objects.unlink(obj)
@@ -1319,6 +1332,20 @@ class Builder:
                     held = block_max[bi]
                 level.append(held)
             fit_r = [level[block_of[s]] for s in range(S)]
+            # The block levels are stable but step abruptly at the boundaries,
+            # which reads as the zoom "resetting" every few seconds. Ease each
+            # step into a gradual ramp (~1.5 s, well shorter than a hold block)
+            # with a twice-applied moving average, then floor by the actual
+            # per-sample radius so the bunch can never fall outside the (now
+            # smoothed) frame during a zoom-out.
+            fps = float(self.args.fps)
+            frames_per_sample = self.evo_frames / max(1, S - 1)
+            trans_s = (max(0.8, min(1.5, 0.4 * self.args.zoom_hold))
+                       if self.args.zoom_hold > 0 else 1.0)
+            win = max(1, int(round(trans_s * fps
+                                   / (2.0 * max(1e-6, frames_per_sample)))))
+            sm = _smooth_series(_smooth_series(fit_r, win), win)
+            fit_r = [max(sm[s], rad[s]) for s in range(S)]
 
         # Real-space cameras: a 3/4 "flythrough"; a near-axial "down the bore"
         # view; and two looking *straight* down the beam axis -- a perspective

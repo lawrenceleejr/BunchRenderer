@@ -130,8 +130,9 @@ def build_parser():
                          "whole flight (no zoom changes at all)")
     sc.add_argument("--zoom-hold", type=float, default=5.0, metavar="SEC",
                     help="minimum time the real-space zoom is held before it may "
-                         "change, so it steps occasionally instead of hunting "
-                         "(default 5; 0 disables the hold)")
+                         "change, so it settles occasionally instead of hunting; "
+                         "changes between levels are eased smoothly rather than "
+                         "snapping (default 5; 0 disables the hold)")
     sc.add_argument("--head-depth", type=float, default=0.6, metavar="FRAC",
                     help="in the axial (x, y) views, the fraction of the "
                          "beamline kept behind the beam head; particles further "
