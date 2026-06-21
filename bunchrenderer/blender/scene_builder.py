@@ -855,6 +855,12 @@ class Builder:
                 f"BR_Trail{b}", tcol, emission=tcol, emission_strength=0.6)
         self.mats["axis"] = make_material(
             "BR_Axis", PALETTE["axis"], metallic=0.9, roughness=0.35)
+        # Emissive twin of the axis material for the corner tripod, which is
+        # rendered unlit in the flat overlay scene (so depth-of-field never
+        # blurs it).
+        self.mats["ov_axis"] = make_material(
+            "BR_OvAxis", PALETTE["axis"], emission=PALETTE["axis"],
+            emission_strength=1.4)
         self.mats["text"] = make_material(
             "BR_Text", PALETTE["text"], metallic=0.0, roughness=0.5,
             emission=PALETTE["text"], emission_strength=1.2)
@@ -1104,58 +1110,14 @@ class Builder:
             set_interpolation(cam.data.animation_data, "LINEAR")
         self.cameras[label] = cam
 
-        # Axis tripod in this camera's lower-left (a pivot empty parented to
-        # the camera and counter-rotated by the constant camera orientation, so
-        # the arrows stay aligned to world x/y/z and never get cut off). Its
-        # scale is animated inversely with the camera distance, so it grows as
-        # the camera dollies in and shrinks as it dollies out -- communicating
-        # the zoom the way a fixed-world-size object near the bunch would.
-        axmat, txmat = self.mats["axis"], self.mats["text"]
-        col = self.hud_collection(label)
-        cam_rot = (-u).to_track_quat("-Z", up_letter)
-        pivot = bpy.data.objects.new(f"{label}_gizmo", None)
-        link(pivot)
-        pivot.parent = cam
-        pivot.matrix_parent_inverse = Matrix.Identity(4)
-        pivot.rotation_mode = "QUATERNION"
-        pivot.rotation_quaternion = cam_rot.inverted()
-        if ortho:
-            # Fixed world size (apparent size ~ 1/ortho_scale conveys zoom) at
-            # the lower-left corner, whose camera-local offset tracks the ortho
-            # window so it stays pinned in frame.
-            for s, frame in enumerate(self.sample_frames):
-                h = oscale(fit_r[s]) * 0.5
-                pivot.location = (-0.7 * h, -0.7 * h * self.aspect, -5.0)
-                pivot.keyframe_insert("location", frame=frame)
-            set_interpolation(pivot.animation_data, "LINEAR")
-        else:
-            # Pinned in front of the camera; scale animated inversely with the
-            # camera distance, so it grows on zoom-in and shrinks on zoom-out.
-            pivot.location = (-0.42, -0.24, -1.6)
-            d_ref = dist(sorted(fit_r)[len(fit_r) // 2])  # median distance
-            for s, frame in enumerate(self.sample_frames):
-                sc = min(1.4, max(0.25, d_ref / dist(fit_r[s])))
-                pivot.scale = (sc, sc, sc)
-                pivot.keyframe_insert("scale", frame=frame)
-            set_interpolation(pivot.animation_data, "LINEAR")
-        alen = 0.10
-        gizmo = [pivot,
-                 make_arrow(f"{label}_ax_x", (0, 0, 0), (1, 0, 0), alen, 0.004, axmat, parent=pivot),
-                 make_arrow(f"{label}_ax_y", (0, 0, 0), (0, 0, 1), alen, 0.004, axmat, parent=pivot),
-                 make_arrow(f"{label}_ax_z", (0, 0, 0), (0, 1, 0), alen, 0.004, axmat, parent=pivot),
-                 make_text(f"{label}_lbl_x", "x", 0.05, Vector((alen + 0.04, 0, 0)),
-                           txmat, target=cam, parent=pivot),
-                 make_text(f"{label}_lbl_y", "y", 0.05, Vector((0, 0, alen + 0.04)),
-                           txmat, target=cam, parent=pivot),
-                 make_text(f"{label}_lbl_z", "z", 0.05, Vector((0, alen + 0.04, 0)),
-                           txmat, target=cam, parent=pivot)]
-        # Put the tripod in this camera's HUD collection so set_active_hud
-        # shows only the active camera's gizmo (otherwise every camera's
-        # tripod renders at once).
-        for obj in gizmo:
-            move_to_collection(obj, col)
+        ov = self.make_overlay(label, lens=float(lens))
+        # Axis tripod. It is rendered in the flat overlay scene (unlit, no
+        # depth-of-field) and composited over the frame, so a wide --aperture
+        # never throws it out of focus. Its orientation is the constant camera
+        # view rotation, so the arrows read as world x/y/z; its size animates to
+        # convey the zoom the way the old in-scene tripod did.
+        self._overlay_gizmo(label, ov, u, up_letter, ortho, fit_r, dist, oscale)
 
-        self.make_overlay(label, lens=float(lens))
         self.add_hud_text(label, f"{label}_title", title, 0.15, 0.0, 0.80, 4.5,
                           bold=True)
         self.add_hud_text(label, f"{label}_caption", f"transverse scale ×{exag:.0f}",
@@ -1492,6 +1454,54 @@ class Builder:
         ov.camera = cam
         self.overlays[label] = {"scene": ov, "lens": lens}
         return ov
+
+    def _to_overlay(self, obj, ov):
+        """Move ``obj`` out of the main scene and into overlay scene ``ov``."""
+        for c in list(obj.users_collection):
+            c.objects.unlink(obj)
+        ov.collection.objects.link(obj)
+        return obj
+
+    def _overlay_gizmo(self, label, ov, u, up_letter, ortho, fit_r, dist, oscale):
+        """Build the axis tripod inside overlay scene ``ov``. The overlay camera
+        looks straight down -Z with no rotation, so orienting the pivot by the
+        main camera's (constant) view rotation makes the arrows project exactly
+        as the in-scene tripod used to -- but unlit and free of depth-of-field.
+        The size animates to convey the zoom (grows on zoom-in)."""
+        ov_cam = ov.camera
+        axmat, txmat = self.mats["ov_axis"], self.mats["text"]
+        cam_rot = (-u).to_track_quat("-Z", up_letter)  # constant camera view rot
+        pivot = bpy.data.objects.new(f"{label}_gizmo", None)
+        pivot.rotation_mode = "QUATERNION"
+        pivot.rotation_quaternion = cam_rot.inverted()
+        pivot.location = (-0.80, -0.36, 0.0)  # pinned lower-left of the frame
+        # Apparent size tracks the zoom: a perspective view grows the gizmo as
+        # the camera dollies in (smaller dist); an ortho view as the ortho
+        # window tightens (smaller scale).
+        if ortho:
+            sizes = [oscale(r) for r in fit_r]
+        else:
+            sizes = [dist(r) for r in fit_r]
+        ref = sorted(sizes)[len(sizes) // 2]  # median -> scale ~1 at mid-zoom
+        for s, frame in enumerate(self.sample_frames):
+            sc = min(1.4, max(0.35, ref / max(1e-6, sizes[s])))
+            pivot.scale = (sc, sc, sc)
+            pivot.keyframe_insert("scale", frame=frame)
+        set_interpolation(pivot.animation_data, "LINEAR")
+        alen = 0.12
+        objs = [pivot,
+                make_arrow(f"{label}_ax_x", (0, 0, 0), (1, 0, 0), alen, 0.006, axmat, parent=pivot),
+                make_arrow(f"{label}_ax_y", (0, 0, 0), (0, 0, 1), alen, 0.006, axmat, parent=pivot),
+                make_arrow(f"{label}_ax_z", (0, 0, 0), (0, 1, 0), alen, 0.006, axmat, parent=pivot),
+                make_text(f"{label}_lbl_x", "x", 0.06, Vector((alen + 0.05, 0, 0)),
+                          txmat, target=ov_cam, parent=pivot),
+                make_text(f"{label}_lbl_y", "y", 0.06, Vector((0, 0, alen + 0.05)),
+                          txmat, target=ov_cam, parent=pivot),
+                make_text(f"{label}_lbl_z", "z", 0.06, Vector((0, alen + 0.05, 0)),
+                          txmat, target=ov_cam, parent=pivot)]
+        for obj in objs:
+            self._to_overlay(obj, ov)
+        return pivot
 
     def add_hud_text(self, label, name, body, size, x, y, depth,
                      material=None, align_x="CENTER", bold=False):
