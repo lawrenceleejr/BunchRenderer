@@ -80,6 +80,7 @@ def parse_args():
     p.add_argument("--zoom-hold", type=float, default=5.0)
     p.add_argument("--head-depth", type=float, default=0.6)
     p.add_argument("--dead-distance", type=float, default=30.0)
+    p.add_argument("--aperture", type=float, default=2.0)
     p.add_argument("--gpu", action="store_true")
     p.add_argument("--fade-in", type=float, default=0.75)
     p.add_argument("--hold", type=float, default=0.5)
@@ -1039,7 +1040,8 @@ class Builder:
     # -- beam (real space) view ---------------------------------------------
 
     def _beam_camera(self, label, target, direction, lens, title, exag, dof,
-                     fit_r, ortho=False, up="UP_Y", head_window=None):
+                     fit_r, ortho=False, up="UP_Y", head_window=None,
+                     aperture=4.0):
         """A real-space camera parented to the (straight-dollying) target. A
         perspective camera animates its distance per sample to frame fit_r[s]
         (the transverse radius to keep visible); an orthographic one animates
@@ -1079,9 +1081,12 @@ class Builder:
                 cam.keyframe_insert("location", frame=frame)
             set_interpolation(cam.animation_data, "LINEAR")
             if dof:
+                # Focus tracks the head: focus_object is the (head-following)
+                # target, so the bunch head stays sharp as the camera dollies
+                # while everything in front of/behind it falls out of focus.
                 cam.data.dof.use_dof = True
                 cam.data.dof.focus_object = target
-                cam.data.dof.aperture_fstop = 4.0
+                cam.data.dof.aperture_fstop = aperture
         if head_window is not None:
             # Clip to a depth window around the head (camera is `d` in front of
             # it): geometry further back than `behind` falls behind the near
@@ -1385,9 +1390,14 @@ class Builder:
             hw = (behind, ahead)
         else:
             hw = (floor, ahead)
+        # beam_xy looks straight down the bore, so a wide aperture focused on
+        # the head throws the trailing comet tails and the whooshing elements
+        # out of focus while the live bunch stays crisp. (The orthographic
+        # sibling is left sharp: its DOF would scale with the animated zoom.)
         self._beam_camera("beam_xy", target, (0.0, -1.0, 0.0),
                           lens=50, title="Transverse — perspective (x, y)",
-                          exag=exag, dof=False, fit_r=fit_r, head_window=hw)
+                          exag=exag, dof=True, fit_r=fit_r, head_window=hw,
+                          aperture=self.args.aperture)
         self._beam_camera("beam_xy_ortho", target, (0.0, -1.0, 0.0),
                           lens=50, title="Transverse — orthographic (x, y)",
                           exag=exag, dof=False, fit_r=fit_r, ortho=True,

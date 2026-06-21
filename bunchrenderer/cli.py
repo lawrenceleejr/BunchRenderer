@@ -143,6 +143,11 @@ def build_parser():
                     help="particles that fall more than this many cm behind the "
                          "beam head (along z) are considered dead and removed "
                          "from the render (default 30; 0 disables)")
+    sc.add_argument("--aperture", type=float, default=2.0, metavar="FSTOP",
+                    help="f-stop of the beam_xy (transverse perspective) camera, "
+                         "which keeps focus on the bunch head; a lower number is "
+                         "a wider aperture / shallower focus that blurs the "
+                         "trails and whooshing elements (default 2.0)")
     sc.add_argument("--no-hull", action="store_true",
                     help="skip the convex-hull envelope surfaces")
     sc.add_argument("--trails", type=int, default=0, metavar="N",
@@ -226,6 +231,7 @@ def _builder_args(args, data_path, blend_path, render_dir):
            "--head-depth", str(args.head_depth),
            "--zoom-hold", str(args.zoom_hold),
            "--dead-distance", str(args.dead_distance),
+           "--aperture", str(args.aperture),
            "--reveal-ahead", str(args.reveal_ahead),
            "--reveal-behind", str(args.reveal_behind),
            "--format", args.format, "--render-dir", str(render_dir)]

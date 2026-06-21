@@ -341,6 +341,9 @@ bunchrender INPUT [INPUT2 ...] [-o out.blend]
                           so comet --trails always show in full
   --dead-distance CM      particles >CM behind the head (along z) are dead and
                           removed from the render (default 30; 0 = off)
+  --aperture FSTOP        f-stop of the beam_xy (transverse perspective) camera,
+                          focused on the bunch head; lower = wider aperture /
+                          shallower focus that blurs trails & elements (def 2.0)
   --no-hud                skip the 2D sub-projection HUD panels
   --frames N --fps N      evolution length (default: auto from input granularity)
   --speed X               playback speed: <1 slower/longer, >1 faster
