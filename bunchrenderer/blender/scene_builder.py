@@ -1354,11 +1354,15 @@ class Builder:
             hw = (floor, ahead)
         # beam_xy looks straight down the bore, so a wide aperture focused on
         # the head throws the trailing comet tails and the whooshing elements
-        # out of focus while the live bunch stays crisp. (The orthographic
-        # sibling is left sharp: its DOF would scale with the animated zoom.)
+        # out of focus while the live bunch stays crisp. Its zoom is *pinned*
+        # to the starting framing (not the shared, dynamically-growing fit_r),
+        # so the bunch doesn't shrink to a dot as the spread grows downstream.
+        # (The orthographic sibling keeps the dynamic zoom and is left sharp --
+        # its DOF would scale with the animated zoom.)
+        fit_r_xy = [fit_r[0]] * len(fit_r)
         self._beam_camera("beam_xy", target, (0.0, -1.0, 0.0),
                           lens=50, title="Transverse — perspective (x, y)",
-                          exag=exag, dof=True, fit_r=fit_r, head_window=hw,
+                          exag=exag, dof=True, fit_r=fit_r_xy, head_window=hw,
                           aperture=self.args.aperture)
         self._beam_camera("beam_xy_ortho", target, (0.0, -1.0, 0.0),
                           lens=50, title="Transverse — orthographic (x, y)",
