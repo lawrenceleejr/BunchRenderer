@@ -258,7 +258,7 @@ both.
 |----|--------|----------|
 | `beam` | `Cam_beam` (follow-cam, motion blur, DoF) | bunch in real space + hull + ruler + elements |
 | `beam_axial` | `Cam_beam_axial` (down the bore) | same scene from the beam axis — shows transverse rotation |
-| `beam_xy` | `Cam_beam_xy` (straight down axis, perspective) | transverse (x, y) view, perspective |
+| `beam_xy` | `Cam_beam_xy` (straight down axis, perspective) | transverse (x, y) view; fixed zoom, shallow DoF focused on the head (`--aperture`) |
 | `beam_xy_ortho` | `Cam_beam_xy_ortho` (straight down axis, orthographic) | flat transverse (x, y) view |
 | `xxpy` | `Cam_xxpy` (orbiting) | 3D projection (x, x′, y) of 4D phase space |
 | `xxpyp` | `Cam_xxpyp` (orbiting) | 3D projection (x, x′, y′) of 4D phase space |
@@ -277,10 +277,10 @@ compositor alpha-combines over the frame, so text is pixel-crisp and fixed
 in place while the camera moves.
 
 Headless rendering selects the right overlay and HUD-panel set per camera
-automatically. To render a camera by hand inside Blender: enable its
-`HUD_<camera>` collection (the 2D sub-projection panels), and point the
-second Render Layers node in the compositor at the matching `OV_<camera>`
-scene.
+automatically. To render a camera by hand inside Blender: point the second
+Render Layers node in the compositor at the matching `OV_<camera>` scene
+(which also holds that camera's axis tripod), and for a phase-space station
+also enable its `HUD_<camera>` collection (the 2D sub-projection panels).
 
 ## Timeline
 

@@ -77,7 +77,8 @@ def load_vrml(path):
     lines.
     """
     text = Path(path).read_text(errors="replace")
-    if "#VRML" not in text.splitlines()[0] and "Coordinate3" not in text:
+    lines = text.splitlines()
+    if not lines or ("#VRML" not in lines[0] and "Coordinate3" not in text):
         raise ElementsError(f"{path}: does not look like a VRML 1.0 file")
     tokens = _vrml_tokens(text)
 

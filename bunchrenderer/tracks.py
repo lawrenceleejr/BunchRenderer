@@ -265,7 +265,7 @@ def _read_csv_dir(path):
     files = sorted(p for p in Path(path).iterdir()
                    if p.suffix.lower() in (".csv", ".txt") and p.is_file())
     if not files:
-        raise TrackError(f"no .csv files found in {path}")
+        raise TrackError(f"no .csv/.txt track files found in {path}")
     return [_read_csv_track(p) for p in files]
 
 

@@ -5,6 +5,7 @@ dist/
 build/
 *.blend
 *.blend1
+*.log
 renders/
 *_renders/
 .bunchrenderer-*/
